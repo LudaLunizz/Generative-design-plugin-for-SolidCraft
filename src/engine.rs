@@ -54,6 +54,7 @@ pub fn execute<H: Host>(host: &mut H, entry: &str, params: &str) -> Result<Strin
         "apply-material" => apply_material(host, &library, parse(params)?)?,
         "material-report" => material_report(host, &library, parse(params)?)?,
         "solver-benchmark" => solver_benchmark(host, parse(params)?)?,
+        "stress-check" => stress_check(host, &library, parse(params)?)?,
         other => return Err(Failure::input("entry", format!("unknown entry {:?}", truncate(other, 64)))),
     };
     serde_json::to_string(&result).map_err(|e| Failure::Internal(format!("could not encode the result: {e}")))
@@ -94,6 +95,18 @@ fn check_bodies<E>(bodies: &[String]) -> Result<(), Failure<E>> {
         return Err(Failure::input("bodies", "a body is named twice"));
     }
     Ok(())
+}
+
+/// `body` (one name, from the GUI's text field) and `bodies` (a list, from scripts) together.
+fn merge_body<E>(mut bodies: Vec<String>, body: &str) -> Result<Vec<String>, Failure<E>> {
+    let body = body.trim();
+    if !body.is_empty() {
+        if !bodies.is_empty() {
+            return Err(Failure::input("body", "give body or bodies, not both"));
+        }
+        bodies.push(body.to_string());
+    }
+    Ok(bodies)
 }
 
 fn round(v: f64, digits: i32) -> f64 {
@@ -170,9 +183,13 @@ struct ApplyParams {
     material: String,
     #[serde(default)]
     bodies: Vec<String>,
+    /// One body by name (the GUI dialog draws text, not lists). Empty: see `bodies`.
+    #[serde(default)]
+    body: String,
 }
 
-fn apply_material<H: Host>(host: &mut H, library: &Library, p: ApplyParams) -> Result<Value, Failure<H::Error>> {
+fn apply_material<H: Host>(host: &mut H, library: &Library, mut p: ApplyParams) -> Result<Value, Failure<H::Error>> {
+    p.bodies = merge_body(std::mem::take(&mut p.bodies), &p.body)?;
     let material = library.find(p.material.trim()).ok_or_else(|| {
         let ids: Vec<&str> = library.materials.iter().map(|m| m.id.as_str()).collect();
         Failure::input("material", format!("not in the library; use one of: {}", ids.join(", ")))
@@ -277,6 +294,8 @@ fn same_material(row: &Value, library: &Library, material: &Material) -> bool {
 struct ReportParams {
     #[serde(default)]
     bodies: Vec<String>,
+    #[serde(default)]
+    body: String,
     #[serde(default = "default_sf")]
     safety_factor: f64,
 }
@@ -285,7 +304,8 @@ fn default_sf() -> f64 {
     2.0
 }
 
-fn material_report<H: Host>(host: &mut H, library: &Library, p: ReportParams) -> Result<Value, Failure<H::Error>> {
+fn material_report<H: Host>(host: &mut H, library: &Library, mut p: ReportParams) -> Result<Value, Failure<H::Error>> {
+    p.bodies = merge_body(std::mem::take(&mut p.bodies), &p.body)?;
     let sf = check_safety_factor(p.safety_factor)?;
     check_bodies(&p.bodies)?;
     let args = if p.bodies.is_empty() { json!({}) } else { json!({ "bodies": p.bodies }) };
@@ -450,6 +470,236 @@ fn solver_benchmark<H: Host>(host: &mut H, b: BenchParams) -> Result<Value, Fail
     Ok(bench_report(&p, &out, b.picture))
 }
 
+// ---------------------------------------------------------------------------------------------
+// stress-check: plane-stress analysis of a flat body under one load (read)
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct StressParams {
+    pub body: String,
+    pub fixed: String,
+    pub load: String,
+    pub force_x: f64,
+    pub force_y: f64,
+    pub force_z: f64,
+    pub safety_factor: f64,
+    pub material: String,
+    pub plane: String,
+    pub resolution: usize,
+    pub picture: bool,
+}
+
+impl Default for StressParams {
+    fn default() -> Self {
+        Self {
+            body: String::new(),
+            fixed: String::new(),
+            load: String::new(),
+            force_x: 0.0,
+            force_y: -100.0,
+            force_z: 0.0,
+            safety_factor: 2.0,
+            material: "body".into(),
+            plane: "auto".into(),
+            resolution: 120,
+            picture: true,
+        }
+    }
+}
+
+fn stress_check<H: Host>(host: &mut H, library: &Library, p: StressParams) -> Result<Value, Failure<H::Error>> {
+    use crate::stress2d::{Face, FaceGeom, Input, PlaneChoice, check};
+    let sf = check_safety_factor(p.safety_factor)?;
+    if !(10..=400).contains(&p.resolution) {
+        return Err(Failure::input("resolution", "expected 10 to 400 cells"));
+    }
+    let plane = match p.plane.as_str() {
+        "auto" => PlaneChoice::Auto,
+        "xy" => PlaneChoice::Xy,
+        "xz" => PlaneChoice::Xz,
+        "yz" => PlaneChoice::Yz,
+        _ => return Err(Failure::input("plane", "expected auto, xy, xz or yz")),
+    };
+    for (field, value) in [("fixed", &p.fixed), ("load", &p.load)] {
+        if value.trim().is_empty() || value.chars().count() > 2048 || value.chars().any(char::is_control) {
+            return Err(Failure::input(field, "name a face (e.g. F1:-x), its number, or a side such as -x; several with commas"));
+        }
+    }
+    let force = [p.force_x, p.force_y, p.force_z];
+    if force.iter().any(|f| !f.is_finite() || f.abs() > 1e9) {
+        return Err(Failure::input("force", "expected numbers up to 1e9 N"));
+    }
+    if p.body.chars().count() > 256 || p.body.chars().any(char::is_control) {
+        return Err(Failure::input("body", "at most 256 printable characters"));
+    }
+
+    // The body and its material.
+    host.progress(0.05, "Reading the body");
+    let args = if p.body.trim().is_empty() { json!({}) } else { json!({ "bodies": [p.body.trim()] }) };
+    let measured = host.run("inspect.measure", &args)?;
+    let rows: Vec<&Value> = measured.get("bodies").and_then(Value::as_array).map(|r| r.iter().collect()).unwrap_or_default();
+    let row = match rows.as_slice() {
+        [one] => *one,
+        [] => return Err(Failure::input("body", "the design has no bodies")),
+        many => {
+            let names: Vec<&str> = many.iter().filter_map(|b| b.get("name").and_then(Value::as_str)).take(10).collect();
+            return Err(Failure::input("body", format!("the design has several bodies; name one: {}", names.join(", "))));
+        }
+    };
+    let body = row.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+    if let Some(error) = row.get("error").and_then(Value::as_str) {
+        return Err(Failure::input("body", format!("{body} cannot be measured: {error}")));
+    }
+    if row.get("closed").and_then(Value::as_bool) == Some(false) {
+        return Err(Failure::input("body", format!("{body} is not closed, so it has no inside to analyse")));
+    }
+    let body_material = row.get("material").and_then(Value::as_str).unwrap_or("");
+    let (material, source) = if p.material == "body" {
+        let entry = library.materials.iter().find(|m| m.name.eq_ignore_ascii_case(body_material.trim())).ok_or_else(|| {
+            Failure::input(
+                "material",
+                format!("{body}'s material ({body_material}) has no strength values; apply a library material first, or pick one here"),
+            )
+        })?;
+        let density = row.get("density_g_cm3").and_then(Value::as_f64);
+        if let (Some(lib), Some(d)) = (entry.density_kg_m3(), density)
+            && (d * 1000.0 - lib).abs() > 1e-6 * lib
+        {
+            return Err(Failure::input("material", format!("{body}'s material is named {} but has other values than the library's; pick one here", entry.name)));
+        }
+        (entry, "the body's material")
+    } else {
+        let entry = library.find(&p.material).ok_or_else(|| Failure::input("material", "not in the library"))?;
+        (entry, "chosen for this check")
+    };
+    let s = material.strengths();
+    let (Some(e_gpa), Some(nu)) = (s.young_modulus_gpa, s.poisson_ratio) else {
+        return Err(Failure::input("material", format!("{} has no stiffness values", material.name)));
+    };
+    let (strength, basis) = match (s.yield_mpa, s.tensile_mpa) {
+        (Some(y), _) => (y, "yield_strength"),
+        (None, Some(t)) => (t, "tensile_strength"),
+        _ => return Err(Failure::input("material", format!("{} has no strength values", material.name))),
+    };
+
+    // Geometry and faces.
+    let longest = row
+        .get("bbox")
+        .and_then(|b| Some((b.get("min")?.as_array()?.clone(), b.get("max")?.as_array()?.clone())))
+        .map(|(lo, hi)| lo.iter().zip(&hi).filter_map(|(l, h)| Some(h.as_f64()? - l.as_f64()?)).fold(0.0, f64::max))
+        .unwrap_or(100.0);
+    if host.cancelled() {
+        return Err(Failure::Cancelled);
+    }
+    host.progress(0.15, "Reading the mesh and faces");
+    let mesh = host.run("model.mesh", &json!({ "body": body, "tolerance": (longest / 400.0).max(0.05) }))?;
+    let positions: Vec<crate::stress2d::P3> = mesh
+        .get("positions")
+        .and_then(Value::as_array)
+        .map(|ps| ps.iter().filter_map(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?, p.get(2)?.as_f64()?])).collect())
+        .unwrap_or_default();
+    let triangles: Vec<[u32; 3]> = mesh
+        .get("triangles")
+        .and_then(Value::as_array)
+        .map(|ts| {
+            ts.iter()
+                .filter_map(|t| {
+                    let i = |k: usize| t.get(k)?.as_u64().and_then(|v| u32::try_from(v).ok());
+                    Some([i(0)?, i(1)?, i(2)?])
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let faces_json = host.run("model.faces", &json!({ "body": body }))?;
+    let p3 = |v: Option<&Value>| -> Option<crate::stress2d::P3> {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let faces: Vec<Face> = faces_json
+        .get("faces")
+        .and_then(Value::as_array)
+        .map(|fs| {
+            fs.iter()
+                .filter_map(|f| {
+                    let geom = if let Some(n) = p3(f.get("plane_normal")) {
+                        FaceGeom::Plane { normal: n }
+                    } else if let Some(c) = f.get("cylinder") {
+                        FaceGeom::Cylinder { axis: p3(c.get("axis"))?, origin: p3(c.get("origin"))?, radius: c.get("radius")?.as_f64()? }
+                    } else {
+                        FaceGeom::Other
+                    };
+                    Some(Face {
+                        index: usize::try_from(f.get("index")?.as_u64()?).ok()?,
+                        name: f.get("name")?.as_str()?.to_string(),
+                        centroid: p3(f.get("centroid"))?,
+                        area: f.get("area")?.as_f64()?,
+                        geom,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if host.cancelled() {
+        return Err(Failure::Cancelled);
+    }
+    host.progress(0.3, "Solving");
+    let input = Input {
+        positions: &positions,
+        triangles: &triangles,
+        faces: &faces,
+        plane,
+        resolution: p.resolution,
+        fixed: &p.fixed,
+        load: &p.load,
+        force,
+        e_mpa: e_gpa * 1000.0,
+        nu,
+    };
+    let out = check(&input).map_err(|reason| Failure::input("check", reason))?;
+    host.progress(1.0, "Done");
+
+    let found_sf = if out.max_vm > 0.0 { strength / out.max_vm } else { f64::INFINITY };
+    let passes = found_sf >= sf;
+    let axis = |k: usize| ["x", "y", "z"].get(k).copied().unwrap_or("?");
+    let plane_name = format!("{}{}", axis(out.axes[0]), axis(out.axes[1]));
+    let pt = |v: [f64; 3]| v.map(|c| round(c, 2));
+    let verdict = format!(
+        "{}: peak {:.1} MPa against {:.0} MPa {} gives a safety factor of {:.2} (needed {:.2})",
+        if passes { "Passes" } else { "Does not pass" },
+        out.max_vm,
+        strength,
+        if basis == "yield_strength" { "yield" } else { "tensile strength" },
+        found_sf,
+        sf
+    );
+    host.log(Level::Info, &verdict);
+    Ok(json!({
+        "verdict": verdict,
+        "passes": passes,
+        "body": body,
+        "material": material.name,
+        "material_source": source,
+        "strength_mpa": strength,
+        "strength_basis": basis,
+        "safety_factor_needed": sf,
+        "safety_factor_found": if found_sf.is_finite() { json!(round(found_sf, 3)) } else { Value::Null },
+        "max_von_mises_mpa": round(out.max_vm, 3),
+        "max_von_mises_at_mm": pt(out.max_vm_at),
+        "p99_von_mises_mpa": round(out.p99_vm, 3),
+        "max_displacement_mm": round(out.max_disp, 5),
+        "max_displacement_at_mm": pt(out.max_disp_at),
+        "plane": plane_name,
+        "thickness_mm": round(out.thickness, 4),
+        "grid": { "cells_x": out.nx, "cells_y": out.ny, "cell_mm": round(out.cell, 4), "material_cells": out.solid_cells },
+        "supports": { "faces": p.fixed.trim(), "grid_nodes": out.fixed_nodes },
+        "load": { "faces": p.load.trim(), "grid_nodes": out.load_nodes, "force_n": force },
+        "solver": { "cg_iterations": out.cg_iterations, "converged": out.converged },
+        "warnings": out.warnings,
+        "picture": if p.picture { json!(out.picture) } else { Value::Null },
+        "method": "2D plane stress on a grid through the part's plane: linear elastic, small deflections, rigid supports, the load spread evenly over the load face. A design check, not a certified analysis.",
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -516,7 +766,8 @@ mod tests {
                         .filter(|b| wanted.as_ref().is_none_or(|w| w.contains(&b.0)))
                         .map(|b| {
                             let d = self.density(&b.2);
-                            json!({"name": b.0, "volume_mm3": b.1, "mass_g": b.1 * d / 1000.0, "density_g_cm3": d, "material": b.2, "closed": true})
+                            json!({"name": b.0, "volume_mm3": b.1, "mass_g": b.1 * d / 1000.0, "density_g_cm3": d, "material": b.2, "closed": true,
+                                   "bbox": {"min": [0.0, 0.0, 0.0], "max": [100.0, 10.0, 5.0]}})
                         })
                         .collect();
                     Ok(json!({ "bodies": rows }))
@@ -524,6 +775,24 @@ mod tests {
                 "material.inspect" => {
                     let name = args["material"].as_str().unwrap();
                     Ok(self.materials.iter().find(|m| m["name"] == name).cloned().unwrap_or(json!({"name": name, "density_g_cm3": 1.29})))
+                }
+                "model.mesh" => {
+                    let (p, tr, _) = crate::stress2d::box_mesh([100.0, 10.0, 5.0]);
+                    Ok(json!({ "body": args["body"], "positions": p, "triangles": tr }))
+                }
+                "model.faces" => {
+                    let (_, _, faces) = crate::stress2d::box_mesh([100.0, 10.0, 5.0]);
+                    let list: Vec<Value> = faces
+                        .iter()
+                        .map(|f| {
+                            let normal = match &f.geom {
+                                crate::stress2d::FaceGeom::Plane { normal } => json!(normal),
+                                _ => Value::Null,
+                            };
+                            json!({"index": f.index, "name": f.name, "centroid": f.centroid, "area": f.area, "plane_normal": normal})
+                        })
+                        .collect();
+                    Ok(json!({ "faces": list }))
                 }
                 other => Err(Failure::Host(format!("unexpected command {other}"))),
             }
@@ -693,6 +962,59 @@ mod tests {
     }
 
     #[test]
+    fn stress_check_on_a_cantilever() {
+        let mut host = Fake::with_bodies(&["Bar"]);
+        run(&mut host, "apply-material", json!({"material": "aluminium-6061-t6", "body": "Bar"})).unwrap();
+        let out = run(&mut host, "stress-check", json!({"fixed": "-x", "load": "+x", "force_y": -100, "resolution": 200})).unwrap();
+        let p99 = out["p99_von_mises_mpa"].as_f64().unwrap();
+        assert!((100.0..=135.0).contains(&p99), "p99 {p99}");
+        assert_eq!(out["material"], "Aluminium 6061-T6");
+        assert_eq!(out["plane"], "xy");
+        assert_eq!(out["strength_basis"], "yield_strength");
+        assert!(out["verdict"].as_str().unwrap().contains("safety factor"));
+        assert!(host.calls.ends_with(&["inspect.measure".to_string(), "model.mesh".into(), "model.faces".into()]));
+    }
+
+    #[test]
+    fn stress_check_needs_strength_values_and_one_body() {
+        let mut host = Fake::with_bodies(&["Bar"]);
+        let err = run(&mut host, "stress-check", json!({"fixed": "-x", "load": "+x"})).unwrap_err();
+        assert!(matches!(err, Failure::Input { ref field, ref reason } if field == "material" && reason.contains("apply a library material")), "{err:?}");
+        let ok = run(&mut host, "stress-check", json!({"fixed": "-x", "load": "+x", "material": "steel-s235jr"})).unwrap();
+        assert_eq!(ok["material_source"], "chosen for this check");
+
+        let mut two = Fake::with_bodies(&["A", "B"]);
+        let err = run(&mut two, "stress-check", json!({"fixed": "-x", "load": "+x", "material": "steel-s235jr"})).unwrap_err();
+        assert!(matches!(err, Failure::Input { ref reason, .. } if reason.contains("A, B")), "{err:?}");
+    }
+
+    #[test]
+    fn stress_check_refuses_bad_input_before_reading() {
+        let mut host = Fake::with_bodies(&["Bar"]);
+        for bad in [
+            json!({"fixed": "", "load": "+x"}),
+            json!({"fixed": "-x", "load": "+x", "resolution": 5}),
+            json!({"fixed": "-x", "load": "+x", "plane": "ab"}),
+            json!({"fixed": "-x", "load": "+x", "force_x": 1e20}),
+            json!({"fixed": "-x", "load": "+x", "safety_factor": 0}),
+            json!({"fixed": "-x", "load": "+x", "unknown": 1}),
+        ] {
+            assert!(matches!(run(&mut host, "stress-check", bad.clone()), Err(Failure::Input { .. })), "{bad}");
+        }
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn body_field_and_bodies_list_are_alternatives() {
+        let mut host = Fake::with_bodies(&["A", "B"]);
+        let out = run(&mut host, "apply-material", json!({"material": "steel-s235jr", "body": "B"})).unwrap();
+        assert_eq!(out["bodies"], json!(["B"]));
+        assert!(run(&mut host, "apply-material", json!({"material": "steel-s235jr", "body": "B", "bodies": ["A"]})).is_err());
+        let report = run(&mut host, "material-report", json!({"body": "A"})).unwrap();
+        assert_eq!(report["body_count"], 1);
+    }
+
+    #[test]
     fn hostile_params_never_panic() {
         let mut host = Fake::with_bodies(&["Bracket"]);
         let long = "x".repeat(100_000);
@@ -707,7 +1029,7 @@ mod tests {
             "\u{0}".to_string(),
             "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[".to_string(),
         ];
-        for entry in ["materials", "apply-material", "material-report", "solver-benchmark", "", &long] {
+        for entry in ["materials", "apply-material", "material-report", "solver-benchmark", "stress-check", "", &long] {
             for s in &samples {
                 let _ = execute(&mut host, entry, s);
             }

@@ -1,8 +1,8 @@
 {
   "id": "gen-design-engine",
   "name": "Generative Design Engine",
-  "version": "0.2.2",
-  "description": "Engineering material library with sourced cards (density, stiffness, strength), applied to bodies, plus a mass and allowable-stress report. Generative design comes in a later version.",
+  "version": "0.3.0",
+  "description": "Engineering material library (sourced cards), material report, and a 2D stress check of flat parts with safety factor. Generative design comes in a later version.",
   "capabilities": [
     "commands@0.1"
   ],
@@ -76,14 +76,11 @@
               ],
               "description": "Creates this material with its engineering card in the design (once) and assigns it"
             },
-            "bodies": {
-              "type": "array",
-              "title": "Bodies",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "description": "Body names; empty means every body in the design"
+            "body": {
+              "type": "string",
+              "title": "Body",
+              "default": "",
+              "description": "A body name; empty means every body in the design (scripts may pass a bodies list instead)"
             }
           }
         }
@@ -100,14 +97,11 @@
         "input_schema": {
           "type": "object",
           "properties": {
-            "bodies": {
-              "type": "array",
-              "title": "Bodies",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "description": "Body names; empty means every body in the design"
+            "body": {
+              "type": "string",
+              "title": "Body",
+              "default": "",
+              "description": "A body name; empty means every body in the design (scripts may pass a bodies list instead)"
             },
             "safety_factor": {
               "type": "number",
@@ -158,6 +152,156 @@
               "minimum": 1.0,
               "maximum": 10.0,
               "description": "Allowable stress = yield strength (or tensile strength when there is no yield) / safety factor"
+            }
+          }
+        }
+      },
+      {
+        "name": "stress-check",
+        "effect": "read",
+        "slots": [
+          {
+            "kind": "ribbon",
+            "name": "Inspect"
+          }
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "fixed",
+            "load"
+          ],
+          "properties": {
+            "fixed": {
+              "type": "string",
+              "title": "Fixed faces",
+              "description": "Where the part is held: a face name (F1:-x, F2:bore:side:0), its number, or a side (-x, +y ...); several with commas"
+            },
+            "load": {
+              "type": "string",
+              "title": "Load faces",
+              "description": "Where the force acts, as for Fixed faces; the force is spread evenly over them"
+            },
+            "force_x": {
+              "type": "number",
+              "title": "Force X",
+              "unit": "N",
+              "default": 0
+            },
+            "force_y": {
+              "type": "number",
+              "title": "Force Y",
+              "unit": "N",
+              "default": -100
+            },
+            "force_z": {
+              "type": "number",
+              "title": "Force Z",
+              "unit": "N",
+              "default": 0
+            },
+            "body": {
+              "type": "string",
+              "title": "Body",
+              "default": "",
+              "description": "The body to check; empty when the design has one body"
+            },
+            "material": {
+              "type": "string",
+              "title": "Material",
+              "default": "body",
+              "oneOf": [
+                {
+                  "const": "body",
+                  "title": "The body's own material"
+                },
+                {
+                  "const": "aluminium-6061-t6",
+                  "title": "Aluminium 6061-T6"
+                },
+                {
+                  "const": "aluminium-7075-t6",
+                  "title": "Aluminium 7075-T6"
+                },
+                {
+                  "const": "steel-s235jr",
+                  "title": "Steel S235JR"
+                },
+                {
+                  "const": "steel-s355jr",
+                  "title": "Steel S355JR"
+                },
+                {
+                  "const": "stainless-304",
+                  "title": "Stainless steel 304"
+                },
+                {
+                  "const": "stainless-316l",
+                  "title": "Stainless steel 316L"
+                },
+                {
+                  "const": "titanium-ti6al4v",
+                  "title": "Titanium Ti-6Al-4V"
+                },
+                {
+                  "const": "pla-printed",
+                  "title": "PLA (3D printed, generic)"
+                },
+                {
+                  "const": "petg-printed",
+                  "title": "PETG (3D printed, generic)"
+                },
+                {
+                  "const": "abs-printed",
+                  "title": "ABS (3D printed, generic)"
+                },
+                {
+                  "const": "pa12-sls",
+                  "title": "Nylon PA12 (SLS printed, generic)"
+                }
+              ]
+            },
+            "safety_factor": {
+              "type": "number",
+              "title": "Safety factor needed",
+              "default": 2.0,
+              "minimum": 1.0,
+              "maximum": 10.0
+            },
+            "plane": {
+              "type": "string",
+              "title": "Plate plane",
+              "default": "auto",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "title": "Automatic (across the thinnest direction)"
+                },
+                {
+                  "const": "xy",
+                  "title": "XY (thickness along Z)"
+                },
+                {
+                  "const": "xz",
+                  "title": "XZ (thickness along Y)"
+                },
+                {
+                  "const": "yz",
+                  "title": "YZ (thickness along X)"
+                }
+              ]
+            },
+            "resolution": {
+              "type": "integer",
+              "title": "Cells along the longer side",
+              "default": 120,
+              "minimum": 10,
+              "maximum": 400
+            },
+            "picture": {
+              "type": "boolean",
+              "title": "Text heat map",
+              "default": true
             }
           }
         }
@@ -261,7 +405,9 @@
       "inspect.measure",
       "material.assign",
       "material.create",
-      "material.list"
+      "material.list",
+      "model.faces",
+      "model.mesh"
     ],
     "limits": {
       "fuel": 100000000000,

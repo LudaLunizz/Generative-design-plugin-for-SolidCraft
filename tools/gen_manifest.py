@@ -6,20 +6,20 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.2.2"
+VERSION = "0.3.0"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
-bodies = {"type": "array", "title": "Bodies", "items": {"type": "string"}, "default": [],
-          "description": "Body names; empty means every body in the design"}
+body = {"type": "string", "title": "Body", "default": "",
+        "description": "A body name; empty means every body in the design (scripts may pass a bodies list instead)"}
 sf = {"type": "number", "title": "Safety factor", "default": 2.0, "minimum": 1.0, "maximum": 10.0,
       "description": "Allowable stress = yield strength (or tensile strength when there is no yield) / safety factor"}
 manifest = {
     "id": "gen-design-engine",
     "name": "Generative Design Engine",
     "version": VERSION,
-    "description": "Engineering material library with sourced cards (density, stiffness, strength), applied to bodies, "
-                   "plus a mass and allowable-stress report. Generative design comes in a later version.",
+    "description": "Engineering material library (sourced cards), material report, and a 2D stress check of flat parts "
+                   "with safety factor. Generative design comes in a later version.",
     "capabilities": ["commands@0.1"],
     "runtime": {
         "module": "plugin.wasm",
@@ -29,10 +29,10 @@ manifest = {
              "input_schema": {"type": "object", "required": ["material"], "properties": {
                  "material": {"type": "string", "title": "Material", "default": "aluminium-6061-t6", "oneOf": one_of,
                               "description": "Creates this material with its engineering card in the design (once) and assigns it"},
-                 "bodies": bodies}}},
+                 "body": body}}},
             {"name": "material-report", "effect": "read",
              "slots": [{"kind": "ribbon", "name": "Inspect"}],
-             "input_schema": {"type": "object", "properties": {"bodies": bodies, "safety_factor": sf}}},
+             "input_schema": {"type": "object", "properties": {"body": body, "safety_factor": sf}}},
             {"name": "materials", "effect": "read",
              "slots": [{"kind": "ribbon", "name": "Manage"}],
              "input_schema": {"type": "object", "properties": {
@@ -40,6 +40,25 @@ manifest = {
                      {"const": "any", "title": "All materials"}, {"const": "metal", "title": "Metals"},
                      {"const": "polymer", "title": "Plastics"}]},
                  "safety_factor": sf}}},
+            {"name": "stress-check", "effect": "read",
+             "slots": [{"kind": "ribbon", "name": "Inspect"}],
+             "input_schema": {"type": "object", "required": ["fixed", "load"], "properties": {
+                 "fixed": {"type": "string", "title": "Fixed faces",
+                           "description": "Where the part is held: a face name (F1:-x, F2:bore:side:0), its number, or a side (-x, +y ...); several with commas"},
+                 "load": {"type": "string", "title": "Load faces", "description": "Where the force acts, as for Fixed faces; the force is spread evenly over them"},
+                 "force_x": {"type": "number", "title": "Force X", "unit": "N", "default": 0},
+                 "force_y": {"type": "number", "title": "Force Y", "unit": "N", "default": -100},
+                 "force_z": {"type": "number", "title": "Force Z", "unit": "N", "default": 0},
+                 "body": {"type": "string", "title": "Body", "default": "", "description": "The body to check; empty when the design has one body"},
+                 "material": {"type": "string", "title": "Material", "default": "body", "oneOf":
+                     [{"const": "body", "title": "The body's own material"}] + one_of},
+                 "safety_factor": {"type": "number", "title": "Safety factor needed", "default": 2.0, "minimum": 1.0, "maximum": 10.0},
+                 "plane": {"type": "string", "title": "Plate plane", "default": "auto", "oneOf": [
+                     {"const": "auto", "title": "Automatic (across the thinnest direction)"},
+                     {"const": "xy", "title": "XY (thickness along Z)"}, {"const": "xz", "title": "XZ (thickness along Y)"},
+                     {"const": "yz", "title": "YZ (thickness along X)"}]},
+                 "resolution": {"type": "integer", "title": "Cells along the longer side", "default": 120, "minimum": 10, "maximum": 400},
+                 "picture": {"type": "boolean", "title": "Text heat map", "default": True}}}},
             {"name": "solver-benchmark", "effect": "read",
              "input_schema": {"type": "object", "properties": {
                  "nx": {"type": "integer", "title": "Cells along X", "default": 60, "minimum": 2, "maximum": 2000},
@@ -57,7 +76,7 @@ manifest = {
                  "picture": {"type": "boolean", "title": "Text picture of the result", "default": True}}}},
         ],
         "commands": sorted(["document.inspect", "inspect.measure", "material.assign", "material.create",
-                            "material.list"]),
+                            "material.list", "model.faces", "model.mesh"]),
         "limits": {"fuel": 100000000000, "memory_mib": 64, "deadline_ms": 30000},
     },
 }

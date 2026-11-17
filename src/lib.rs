@@ -7,6 +7,7 @@
 pub mod engine;
 pub mod library;
 pub mod mg2d;
+pub mod stress2d;
 pub mod topo2d;
 
 #[cfg(target_arch = "wasm32")]

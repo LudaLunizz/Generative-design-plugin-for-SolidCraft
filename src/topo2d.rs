@@ -230,16 +230,38 @@ pub fn analyse(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>) -> Analysi
 
 /// [`analyse`] with a clock (seconds) for the setup/solve split.
 pub fn analyse_timed(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>, clock: &dyn Fn() -> f64) -> Analysis {
-    let t0 = clock();
     let (fixed, f) = p.supports_and_load();
-    let fine = Level { nx: p.nx, ny: p.ny, cells: Cells::Scaled { ke: Box::new(element_stiffness(p.nu)), modulus: modulus.to_vec() }, fixed };
-    let mut u = start.filter(|s| s.len() == f.len()).unwrap_or_else(|| vec![0.0; f.len()]);
+    let system = System { nx: p.nx, ny: p.ny, nu: p.nu, modulus, fixed, load: &f, solver: p.solver, cg_tol: p.cg_tol, cg_max: p.cg_max };
+    solve(&system, start, clock)
+}
+
+/// A linear system on the grid: per-cell stiffness factor (E times thickness, or the SIMP
+/// modulus), fixed DOFs, and the load vector (DOF order as `mg2d::cell_dofs`).
+pub struct System<'a> {
+    pub nx: usize,
+    pub ny: usize,
+    pub nu: f64,
+    pub modulus: &'a [f64],
+    pub fixed: Vec<bool>,
+    pub load: &'a [f64],
+    pub solver: Solver,
+    pub cg_tol: f64,
+    pub cg_max: usize,
+}
+
+/// Solves K u = f for `system`, warm-started from `start` when it fits.
+pub fn solve(s: &System, start: Option<Vec<f64>>, clock: &dyn Fn() -> f64) -> Analysis {
+    let t0 = clock();
+    let f = s.load;
+    let p = s;
+    let fine = Level { nx: s.nx, ny: s.ny, cells: Cells::Scaled { ke: Box::new(element_stiffness(s.nu)), modulus: s.modulus.to_vec() }, fixed: s.fixed.clone() };
+    let mut u = start.filter(|v| v.len() == f.len()).unwrap_or_else(|| vec![0.0; f.len()]);
     let (cg_iterations, converged, levels, t1) = match p.solver {
         Solver::Jacobi => {
             let inv: Vec<f64> = fine.diagonal().iter().map(|d| 1.0 / d).collect();
             let jacobi = |r: &[f64]| r.iter().zip(&inv).map(|(a, d)| a * d).collect();
             let t1 = clock();
-            let (it, ok) = pcg(&fine, &jacobi, &f, &mut u, p.cg_tol, p.cg_max);
+            let (it, ok) = pcg(&fine, &jacobi, f, &mut u, p.cg_tol, p.cg_max);
             (it, ok, 1, t1)
         }
         Solver::Multigrid => {
@@ -247,7 +269,7 @@ pub fn analyse_timed(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>, cloc
             let t1 = clock();
             match h.fine() {
                 Some(op) => {
-                    let (it, ok) = pcg(op, &|r: &[f64]| h.precondition(r), &f, &mut u, p.cg_tol, p.cg_max);
+                    let (it, ok) = pcg(op, &|r: &[f64]| h.precondition(r), f, &mut u, p.cg_tol, p.cg_max);
                     (it, ok, h.depth(), t1)
                 }
                 None => (0, false, 0, t1),
@@ -255,7 +277,7 @@ pub fn analyse_timed(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>, cloc
         }
     };
     let t2 = clock();
-    let compliance = dot(&f, &u);
+    let compliance = dot(f, &u);
     Analysis { u, compliance, cg_iterations, converged, levels, setup_s: t1 - t0, solve_s: t2 - t1 }
 }
 

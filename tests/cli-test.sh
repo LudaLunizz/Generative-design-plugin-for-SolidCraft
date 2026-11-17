@@ -77,7 +77,40 @@ if solidcraft-cli run bad.json --results --json-out bad.out --quiet 2>bad.err; t
 grep -qs "not in the library" bad.err bad.out || fail "refusal does not say why: $(cat bad.err)"
 echo "bad input refused: $(grep -hos 'not in the library[^;]*' bad.err bad.out | head -n 1)"
 
-# 5. The saved design reopens and keeps its materials with no plugin present.
+# 5. Stress check in the real app: a cantilever against beam theory, and a plate held by a hole.
+{
+  echo '['
+  echo '{"command":"solid.box","params":{"length":100,"width":10,"height":5,"body_name":"Bar"}},'
+  run_step apply-material '{"material":"aluminium-6061-t6","body":"Bar"}'; echo ','
+  run_step stress-check '{"fixed":"-x","load":"+x","force_y":-100,"resolution":200,"picture":false}'
+  echo ']'
+} > stress.json
+solidcraft-cli run stress.json --results --json-out stress.out --quiet || fail "stress run failed: $(head -c 2000 stress.out 2>/dev/null)"
+p99=$(jq -r '.[2].result.p99_von_mises_mpa' stress.out); disp=$(jq -r '.[2].result.max_displacement_mm' stress.out)
+python3 -I -c "import sys; sys.exit(0 if 100 <= $p99 <= 135 and 1.11 <= $disp <= 1.20 else 1)" \
+  || fail "cantilever off beam theory (120 MPa, 1.17 mm): p99 $p99 MPa, tip $disp mm"
+echo "stress check: cantilever p99 $p99 MPa (beam theory 120), tip $disp mm (1.17); $(jq -r '.[2].result.verdict' stress.out)"
+{
+  echo '['
+  echo '{"command":"solid.box","params":{"length":100,"width":30,"height":5,"body_name":"Plate"}},'
+  echo '{"command":"solid.hole","params":{"body":"Plate","position":[15,15,5],"diameter":6}},'
+  run_step apply-material '{"material":"pla-printed","body":"Plate"}'; echo ','
+  echo '{"command":"model.faces","params":{"body":"Plate"}}'
+  echo ']'
+} > hole1.json
+solidcraft-cli run hole1.json --results --json-out hole1.out --quiet --save hole.sc || fail "hole setup failed"
+bore=$(jq -r '[.[3].faces[] | select(.cylinder != null) | .name][0]' hole1.out)
+{
+  echo '['
+  run_step stress-check "{\"fixed\":\"$bore\",\"load\":\"+x\",\"force_y\":-20,\"picture\":true}"
+  echo ']'
+} > hole2.json
+solidcraft-cli run hole2.json --in hole.sc --results --json-out hole2.out --quiet || fail "hole stress run failed: $(head -c 2000 hole2.out 2>/dev/null)"
+jq -e '.[0].result.solver.converged and .[0].result.supports.grid_nodes >= 8' hole2.out >/dev/null || fail "hole check: $(jq -c '.[0].result | {solver, supports}' hole2.out)"
+echo "stress check: plate held by $bore: $(jq -r '.[0].result.verdict' hole2.out)"
+jq -r '.[0].result.picture[]' hole2.out | sed 's/^/    |/'
+
+# 6. The saved design reopens and keeps its materials with no plugin present.
 rm -rf gen-design-engine
 echo '[{"command":"inspect.measure","params":{}}]' > reopen.json
 solidcraft-cli run reopen.json --in all.sc --results --json-out reopen.out --quiet

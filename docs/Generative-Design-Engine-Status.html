@@ -21,7 +21,7 @@ li { margin-bottom: 2pt; }
 p { margin: 5pt 0; }
 </style></head><body>
 <h1>Generative Design Engine - Status</h1>
-<div class="sub">SolidCraft plugin · version 0.2.2 · 17 Nov 2026 · ~/project SolidCraft/generative-design-engine (local git)</div>
+<div class="sub">SolidCraft plugin · version 0.3.0 · 17 Nov 2026 · ~/project SolidCraft/generative-design-engine (local git)</div>
 
 <div class="box"><b>In short:</b> the 0.1 plugin did not work and its results were made up. It is rebuilt as a real SolidCraft component with an 11-material engineering library (SolidCraft's own material cards) and a per-body material report. It is installed in SolidCraft 0.42 and passes an end-to-end test there. Generative design and stress analysis are withdrawn until a real solver backs them.</div>
 
@@ -98,6 +98,15 @@ p { margin: 5pt 0; }
 <p>Fuel per call inside SolidCraft at 120 x 60 (measured by bisection): stiffness product 9.1 M to 2.4 M, V-cycle 82 M to 33 M, multigrid setup 420 M to 117 M. One design iteration is now about 0.44 billion: V-cycles about 70%, setup about 27%.</p>
 <p>Next for larger grids: SIMD and packed matrices on the coarse grids, cheaper restriction and interpolation, building the coarse-grid weights once instead of per cell, a direct diagonal. Expected another 2-3x, enough for 160 x 80 within the default fuel ceiling. Raising the ceiling in Preferences also works, as long as the run stays under 30 s.</p>
 
+<h2>Stress check (17 Nov, v0.3.0)</h2>
+<div class="box"><b>New entry <code>stress-check</code></b> (Model › Plugins): say where a flat part is held and where a force acts, and it gives the peak stress and where, the safety factor against the material's strength (pass or not), the largest displacement and a text heat map. Faces by name (<code>F2:bore:side:0</code>), number, or side (<code>-x</code>); screw holes work as supports.</div>
+<table><tr><th>Check in SolidCraft</th><th>Plugin</th><th>Theory</th></tr>
+<tr><td>Cantilever 100 x 10 x 5 mm aluminium, 100 N: tip deflection</td><td>1.170 mm</td><td>1.17 mm</td></tr>
+<tr><td>Same: peak bending stress at the root</td><td>121.4 MPa</td><td>120 MPa</td></tr>
+<tr><td>PLA plate 100 x 30 x 5 held by one 6 mm hole, 20 N at the far end</td><td>peak 7.3 MPa at the hole, safety factor 6.9</td><td>-</td></tr></table>
+<p>Method: the body's mesh is sampled on a grid at mid-thickness (rays through the thickness), plane stress with the multigrid solver, von Mises stress per cell. Limits, all reported as warnings when they apply: flat parts of one thickness only; force through the plate ignored; linear elastic, small deflections, rigid supports, the load spread evenly; peaks at sharp inside corners depend on the grid (the 99th percentile is reported beside the peak).</p>
+<p>Also fixed: SolidCraft's plugin dialog cannot draw list fields and switched Run off for <code>apply-material</code> and <code>material-report</code>. They now have a <b>Body</b> text field (empty = all bodies); a new test checks that every entry stays drawable.</p>
+
 <h2>Next</h2>
 <ul>
 <li>Check the library values against the standards and datasheets (research round), add your filaments' datasheet values.</li>
@@ -106,7 +115,7 @@ p { margin: 5pt 0; }
 
 <h2>Paths</h2>
 <pre>Source:     ~/project SolidCraft/generative-design-engine  (git: cb61637)
-Package:    dist/gen-design-engine-0.2.2.zip (+ .sha256)
+Package:    dist/gen-design-engine-0.3.0.zip (+ .sha256)
 Installed:  ~/.local/share/solidcraft/plugins/gen-design-engine
 Old 0.1:    winExtra/0000 Claude deprecated/SolidCraft/.generative-design-engine.bak-before-rewrite</pre>
 </body></html>
