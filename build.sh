@@ -9,7 +9,7 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
 python3 -I tools/gen_manifest.py
 cargo test --quiet
 cargo clippy --all-targets --quiet -- -D warnings
-cargo build --release --target wasm32-unknown-unknown --quiet
+cargo build --release --target wasm32-unknown-unknown --lib --quiet
 
 core=target/wasm32-unknown-unknown/release/generative_design_engine.wasm
 stage=target/package/gen-design-engine
