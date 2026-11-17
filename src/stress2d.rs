@@ -147,6 +147,9 @@ pub fn check(input: &Input) -> Result<Output, String> {
     let levels = [comp(&lo, w) + 0.25 * thickness, wmid, comp(&lo, w) + 0.75 * thickness];
     let jitter = (h * 1.234_567e-4, h * 2.718_281e-4);
     let mut crossings = vec![[0u32; 3]; nx * ny];
+    const SS: usize = 4;
+    let (snx, sny) = (nx * SS, ny * SS);
+    let mut sub = vec![0u8; snx * sny];
     for tri in input.triangles {
         let [Some(p), Some(q), Some(r)] = tri.map(|i| input.positions.get(i as usize)) else {
             return Err("the mesh has a triangle with a bad vertex index".into());
@@ -162,6 +165,28 @@ pub fn check(input: &Input) -> Result<Output, String> {
         let ia1 = ((((pa.max(qa).max(ra) - a0) / h - 0.5).ceil().max(0.0)) as usize).min(nx.saturating_sub(1));
         let ib0 = (((pb.min(qb).min(rb) - b0) / h - 0.5).floor().max(0.0)) as usize;
         let ib1 = ((((pb.max(qb).max(rb) - b0) / h - 0.5).ceil().max(0.0)) as usize).min(ny.saturating_sub(1));
+        // Sub-samples (SS x SS per cell): parity of the crossings above the mid-thickness level.
+        {
+            let (sa0, sa1) = (ia0 * SS, ((ia1 + 1) * SS).min(snx));
+            let (sb0, sb1) = (ib0 * SS, ((ib1 + 1) * SS).min(sny));
+            let sh = h / SS as f64;
+            for si in sa0..sa1 {
+                let ca = a0 + (si as f64 + 0.5) * sh + jitter.0;
+                for sj in sb0..sb1 {
+                    let cb = b0 + (sj as f64 + 0.5) * sh + jitter.1;
+                    let s = ((ca - pa) * (rb - pb) - (ra - pa) * (cb - pb)) / det;
+                    let t = ((qa - pa) * (cb - pb) - (ca - pa) * (qb - pb)) / det;
+                    if s < 0.0 || t < 0.0 || s + t > 1.0 {
+                        continue;
+                    }
+                    if pw + s * (qw - pw) + t * (rw - pw) > wmid {
+                        if let Some(c) = sub.get_mut(si * sny + sj) {
+                            *c ^= 1;
+                        }
+                    }
+                }
+            }
+        }
         for i in ia0..=ia1 {
             for j in ib0..=ib1 {
                 let ca = a0 + (i as f64 + 0.5) * h + jitter.0;
@@ -183,7 +208,23 @@ pub fn check(input: &Input) -> Result<Output, String> {
             }
         }
     }
-    let solid: Vec<bool> = crossings.iter().map(|c| c[1] % 2 == 1).collect();
+    let mut frac = vec![0.0f64; nx * ny];
+    for i in 0..nx {
+        for j in 0..ny {
+            let mut n = 0u32;
+            for di in 0..SS {
+                for dj in 0..SS {
+                    n += u32::from(sub.get((i * SS + di) * sny + j * SS + dj).copied().unwrap_or(0));
+                }
+            }
+            if let Some(f) = frac.get_mut(i * ny + j) {
+                *f = f64::from(n) / (SS * SS) as f64;
+            }
+        }
+    }
+    // A cell counts as material when at least half of it is; nodes touch material when any part is.
+    let solid: Vec<bool> = frac.iter().map(|f| *f >= 0.5).collect();
+    let present: Vec<bool> = frac.iter().map(|f| *f > 0.0).collect();
     let solid_cells = solid.iter().filter(|s| **s).count();
     if solid_cells == 0 {
         return Err("no material found in the body's plane; check the plane choice and that the body is closed".into());
@@ -200,7 +241,7 @@ pub fn check(input: &Input) -> Result<Output, String> {
     let nodes_y = ny + 1;
     let node_in_material = |i: usize, j: usize| {
         let cell = |ci: Option<usize>, cj: Option<usize>| match (ci, cj) {
-            (Some(ci), Some(cj)) if ci < nx && cj < ny => solid.get(ci * ny + cj).copied().unwrap_or(false),
+            (Some(ci), Some(cj)) if ci < nx && cj < ny => present.get(ci * ny + cj).copied().unwrap_or(false),
             _ => false,
         };
         cell(Some(i), Some(j)) || cell(i.checked_sub(1), Some(j)) || cell(Some(i), j.checked_sub(1)) || cell(i.checked_sub(1), j.checked_sub(1))
@@ -308,7 +349,8 @@ pub fn check(input: &Input) -> Result<Output, String> {
         }
     }
     let et = input.e_mpa * thickness;
-    let modulus: Vec<f64> = solid.iter().map(|s| if *s { et } else { et * 1e-9 }).collect();
+    // Each cell is as stiff as the share of it that is material, so a round edge is smooth, not stepped.
+    let modulus: Vec<f64> = frac.iter().map(|f| et * f.max(1e-9)).collect();
     let system = System { nx, ny, nu: input.nu, modulus: &modulus, fixed, load: &load, solver: Solver::Multigrid, cg_tol: 1e-9, cg_max: 5000 };
     let analysis = solve(&system, None, &|| 0.0);
     if !analysis.converged {
@@ -353,6 +395,8 @@ pub fn check(input: &Input) -> Result<Output, String> {
         }
         p
     };
+    let (surface_vm, surface_at) = surface_peak(&frac, &vm, nx, ny, 1);
+    let (surface_wide, _) = surface_peak(&frac, &vm, nx, ny, 2);
     let mut max_vm = 0.0;
     let mut max_at = 0;
     for (k, v) in vm.iter().enumerate() {
@@ -360,6 +404,11 @@ pub fn check(input: &Input) -> Result<Output, String> {
             max_vm = *v;
             max_at = k;
         }
+    }
+    let cell_max = max_vm;
+    if surface_vm > 0.0 {
+        max_vm = surface_vm;
+        max_at = surface_at;
     }
     let mut sorted: Vec<f64> = vm.iter().copied().filter(|v| v.is_finite()).collect();
     sorted.sort_by(f64::total_cmp);
@@ -387,9 +436,15 @@ pub fn check(input: &Input) -> Result<Output, String> {
     if !max_disp.is_finite() || max_disp > 0.2 * la.max(lb) {
         warnings.push("the part moves very far: check that the supports hold it (a single point or a part not connected to them lets it swing)".into());
     }
+    if surface_vm > 0.0 && (surface_vm - surface_wide) > 0.04 * surface_vm {
+        warnings.push(format!(
+            "the stress changes quickly over the few cells next to the peak (a small hole or round edge for this grid): the peak of {surface_vm:.1} MPa is probably low, by more than {:.0}%; raise the resolution",
+            100.0 * (surface_vm - surface_wide) / surface_vm
+        ));
+    }
     if max_vm > 1.5 * p99 && sorted.len() >= 100 {
         warnings.push(
-            "the peak stress sits in a few cells only (a sharp inside corner, or the edge of a support or load): such peaks grow with finer grids. Round the corner, or judge by the 99th percentile"
+            "the peak stress sits in a few cells only. At a round hole or fillet it is the stress at the surface and settles with finer grids; at a sharp inside corner or the edge of a support or load it keeps growing with them: round the corner, or judge by the 99th percentile"
                 .into(),
         );
     }
@@ -411,8 +466,122 @@ pub fn check(input: &Input) -> Result<Output, String> {
         cg_iterations: analysis.cg_iterations,
         converged: analysis.converged,
         warnings,
-        picture: heat_picture(&vm, nx, ny, max_vm, 60),
+        picture: heat_picture(&vm, nx, ny, cell_max, 60),
     })
+}
+
+/// Area (in cells) of the square [-r, r]^2 on the side `p . n <= d` of a line.
+fn clipped_area(n: (f64, f64), d: f64, r: f64) -> f64 {
+    // Polygon clipping of the square against the half plane (Sutherland-Hodgman, one edge).
+    let pts = [(-r, -r), (r, -r), (r, r), (-r, r)];
+    let side = |p: (f64, f64)| p.0 * n.0 + p.1 * n.1 - d;
+    let mut poly: Vec<(f64, f64)> = Vec::with_capacity(6);
+    for (p, q) in pts.iter().zip(pts.iter().cycle().skip(1)) {
+        let (sp, sq) = (side(*p), side(*q));
+        if sp <= 0.0 {
+            poly.push(*p);
+        }
+        if (sp <= 0.0) != (sq <= 0.0) {
+            let t = sp / (sp - sq);
+            poly.push((p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)));
+        }
+    }
+    let mut area = 0.0;
+    for (p, q) in poly.iter().zip(poly.iter().cycle().skip(1)) {
+        area += p.0 * q.1 - q.0 * p.1;
+    }
+    0.5 * area.abs()
+}
+
+/// The stress at the surface of the part, not at the centre of the nearest cell: the stress
+/// changes fast next to a hole or a fillet (about 20 MPa per mm for a 5 mm hole), so a cell
+/// centre 0 to 0.3 mm inside the surface reads several MPa low, and by a different amount for
+/// every grid. For every full cell near an edge: a plane is fitted to the stress of the full cells
+/// of its (2r+1)^2 patch, the surface is placed from the share of material in the patch (a straight
+/// edge of that area, along the gradient of the share), and the plane is read there.
+/// Returns (peak, cell index of the peak); cells away from edges count with their own value.
+fn surface_peak(frac: &[f64], vm: &[f64], nx: usize, ny: usize, r: isize) -> (f64, usize) {
+    let at = |i: isize, j: isize| -> (f64, f64) {
+        if i < 0 || j < 0 || i >= nx as isize || j >= ny as isize {
+            return (0.0, f64::NAN);
+        }
+        let k = i as usize * ny + j as usize;
+        (frac.get(k).copied().unwrap_or(0.0), vm.get(k).copied().unwrap_or(f64::NAN))
+    };
+    let (mut best, mut best_at) = (0.0, 0);
+    let half = r as f64 + 0.5;
+    let full_area = (2.0 * half) * (2.0 * half);
+    for i in 0..nx as isize {
+        for j in 0..ny as isize {
+            let (f0, v0) = at(i, j);
+            if f0 < 0.999 || !v0.is_finite() {
+                continue;
+            }
+            let mut value = v0;
+            let (mut area, mut gx, mut gy) = (0.0, 0.0, 0.0);
+            for di in -r..=r {
+                for dj in -r..=r {
+                    let f = at(i + di, j + dj).0;
+                    area += f;
+                    gx += di as f64 * f;
+                    gy += dj as f64 * f;
+                }
+            }
+            if area < full_area - 1e-9 {
+                let glen = (gx * gx + gy * gy).sqrt();
+                if glen > 1e-6 {
+                    let n = (-gx / glen, -gy / glen); // out of the material
+                    let (mut lo_d, mut hi_d) = (-half * 1.5, half * 1.5);
+                    for _ in 0..40 {
+                        let mid = 0.5 * (lo_d + hi_d);
+                        if clipped_area(n, mid, half) < area {
+                            lo_d = mid;
+                        } else {
+                            hi_d = mid;
+                        }
+                    }
+                    let d = 0.5 * (lo_d + hi_d); // distance from the cell centre to the surface, in cells
+                    // Least-squares plane through the full cells of the patch: v = a + b x + c y.
+                    let (mut s1, mut sx, mut sy, mut sxx, mut sxy, mut syy) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+                    let (mut sv, mut sxv, mut syv) = (0.0, 0.0, 0.0);
+                    for di in -r..=r {
+                        for dj in -r..=r {
+                            let (f, v) = at(i + di, j + dj);
+                            if f < 0.999 || !v.is_finite() {
+                                continue;
+                            }
+                            let (x, y) = (di as f64, dj as f64);
+                            s1 += 1.0;
+                            sx += x;
+                            sy += y;
+                            sxx += x * x;
+                            sxy += x * y;
+                            syy += y * y;
+                            sv += v;
+                            sxv += x * v;
+                            syv += y * v;
+                        }
+                    }
+                    // Solve the 3x3 normal equations by Cramer's rule.
+                    let det = s1 * (sxx * syy - sxy * sxy) - sx * (sx * syy - sxy * sy) + sy * (sx * sxy - sxx * sy);
+                    if s1 >= 4.0 && det.abs() > 1e-9 && (0.0..=2.0 * half).contains(&d) {
+                        let a = (sv * (sxx * syy - sxy * sxy) - sx * (sxv * syy - sxy * syv) + sy * (sxv * sxy - sxx * syv)) / det;
+                        let b = (s1 * (sxv * syy - sxy * syv) - sv * (sx * syy - sxy * sy) + sy * (sx * syv - sxv * sy)) / det;
+                        let c = (s1 * (sxx * syv - sxv * sxy) - sx * (sx * syv - sxv * sy) + sv * (sx * sxy - sxx * sy)) / det;
+                        let extrapolated = a + (b * n.0 + c * n.1) * d;
+                        if extrapolated.is_finite() {
+                            value = extrapolated.max(v0);
+                        }
+                    }
+                }
+            }
+            if value > best {
+                best = value;
+                best_at = i as usize * ny + j as usize;
+            }
+        }
+    }
+    (best, best_at)
 }
 
 /// The faces a selector names: comma-separated face names, face numbers, or sides (+x, -y, ...).
@@ -525,6 +694,67 @@ pub fn box_mesh(size: P3) -> (Vec<P3>, Vec<[u32; 3]>, Vec<Face>) {
     (p, t, faces)
 }
 
+/// A closed plate (size x, y, thickness z, corner at the origin) with one round hole through its
+/// thickness, for tests and examples. Only the top and bottom faces matter for the grid check; the
+/// side walls are left out of the mesh (they are parallel to the thickness and never sampled).
+pub fn plate_with_hole_mesh(size: P3, centre: [f64; 2], radius: f64, segments: usize) -> (Vec<P3>, Vec<[u32; 3]>) {
+    let [x, y, z] = size;
+    let n = segments.max(8);
+    // Outer boundary points along the same rays as the hole points, plus the four corners.
+    let ray_hit = |ang: f64| -> [f64; 2] {
+        let (dx, dy) = (ang.cos(), ang.sin());
+        let mut t = f64::INFINITY;
+        if dx > 1e-12 {
+            t = t.min((x - centre[0]) / dx);
+        } else if dx < -1e-12 {
+            t = t.min(-centre[0] / dx);
+        }
+        if dy > 1e-12 {
+            t = t.min((y - centre[1]) / dy);
+        } else if dy < -1e-12 {
+            t = t.min(-centre[1] / dy);
+        }
+        [centre[0] + t * dx, centre[1] + t * dy]
+    };
+    let mut angles: Vec<f64> = (0..n).map(|k| std::f64::consts::TAU * (k as f64 + 0.37) / n as f64).collect();
+    for corner in [[x, y], [0.0, y], [0.0, 0.0], [x, 0.0]] {
+        let mut a = (corner[1] - centre[1]).atan2(corner[0] - centre[0]);
+        if a < 0.0 {
+            a += std::f64::consts::TAU;
+        }
+        angles.push(a);
+    }
+    angles.sort_by(f64::total_cmp);
+    // One ring of inner (hole) and outer points per angle; every ring step becomes two triangles.
+    let m = angles.len();
+    let mut pos = Vec::new();
+    for zz in [0.0, z] {
+        for a in &angles {
+            pos.push([centre[0] + radius * a.cos(), centre[1] + radius * a.sin(), zz]);
+        }
+        for a in &angles {
+            let o = ray_hit(*a);
+            pos.push([o[0], o[1], zz]);
+        }
+    }
+    let mut tri = Vec::new();
+    for layer in 0..2usize {
+        let base = layer * 2 * m;
+        for k in 0..m {
+            let k2 = (k + 1) % m;
+            let (i0, i1, o0, o1) = ((base + k) as u32, (base + k2) as u32, (base + m + k) as u32, (base + m + k2) as u32);
+            if layer == 0 {
+                tri.push([i0, o1, o0]);
+                tri.push([i0, i1, o1]);
+            } else {
+                tri.push([i0, o0, o1]);
+                tri.push([i0, o1, i1]);
+            }
+        }
+    }
+    (pos, tri)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -567,6 +797,67 @@ mod tests {
         assert!((0.85..=1.1).contains(&ratio_s), "p99 {} vs {sigma}", out.p99_vm);
         assert!(out.max_vm_at[0] < 5.0, "peak should be at the fixed end: {:?}", out.max_vm_at);
         assert_eq!(out.solid_cells, 200 * 20);
+    }
+
+    /// Plate 120 x 40 x 5 with a 10 mm hole, 3000 N pull: net stress 20 MPa, Peterson's Kt on the net
+    /// section for d/w = 0.25 is 2.42, so the stress at the hole's side is about 48.4 MPa. The peak at a
+    /// round edge must not jump by several MPa when the hole moves a fraction of a cell on the grid.
+    #[test]
+    fn hole_peak_is_stable_and_near_theory() {
+        let (_, _, faces) = box_mesh([120.0, 40.0, 5.0]);
+        let mut peaks = Vec::new();
+        for shift in [0.0, 0.07, 0.13, 0.21] {
+            let (pos, tri) = plate_with_hole_mesh([120.0, 40.0, 5.0], [60.0 + shift, 20.0 + 0.6 * shift], 5.0, 96);
+            let input = Input { positions: &pos, triangles: &tri, faces: &faces, plane: PlaneChoice::Auto, resolution: 300, fixed: "-x", load: "+x", force: [3000.0, 0.0, 0.0], e_mpa: 68_900.0, nu: 0.33 };
+            let out = check(&input).unwrap();
+            assert!(out.converged);
+            assert!((out.p99_vm - 22.0).abs() < 1.5, "p99 {}", out.p99_vm);
+            assert!((out.max_vm_at[1] - 20.0).abs() > 3.0 && (out.max_vm_at[0] - 60.0).abs() < 3.0, "peak should be at the hole's side: {:?}", out.max_vm_at);
+            peaks.push(out.max_vm);
+        }
+        let (lo, hi) = peaks.iter().fold((f64::MAX, f64::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+        assert!(lo > 0.90 * 48.4 && hi < 1.04 * 48.4, "peaks {peaks:?}");
+        assert!(hi - lo < 0.06 * hi, "peak jumps with the hole position: {peaks:?}");
+    }
+
+    #[test]
+    fn coarse_grid_at_a_hole_warns_that_the_peak_is_low() {
+        let (_, _, faces) = box_mesh([120.0, 40.0, 5.0]);
+        let (pos, tri) = plate_with_hole_mesh([120.0, 40.0, 5.0], [60.0, 20.0], 5.0, 96);
+        let run = |resolution| {
+            let input = Input { positions: &pos, triangles: &tri, faces: &faces, plane: PlaneChoice::Auto, resolution, fixed: "-x", load: "+x", force: [3000.0, 0.0, 0.0], e_mpa: 68_900.0, nu: 0.33 };
+            check(&input).unwrap()
+        };
+        let coarse = run(100);
+        assert!(coarse.warnings.iter().any(|w| w.contains("probably low")), "{:?}", coarse.warnings);
+        let fine = run(400);
+        assert!(!fine.warnings.iter().any(|w| w.contains("probably low")), "{:?}", fine.warnings);
+        assert!(fine.max_vm > coarse.max_vm);
+    }
+
+    /// A straight edge on a cell boundary must not be moved or sharpened by the surface reading.
+    #[test]
+    fn surface_peak_leaves_flat_fields_alone() {
+        let (nx, ny) = (12, 10);
+        let frac = vec![1.0; nx * ny];
+        let vm = vec![7.0; nx * ny];
+        let (peak, _) = surface_peak(&frac, &vm, nx, ny, 1);
+        assert!((peak - 7.0).abs() < 1e-9);
+        // A half-covered edge column with a stress rising 2 MPa per cell towards the edge: the surface
+        // sits 0.5 cell beyond the last full column, so the reading is 1 MPa above that column.
+        let mut frac = vec![1.0; nx * ny];
+        let mut vm = vec![0.0; nx * ny];
+        for i in 0..nx {
+            for j in 0..ny {
+                vm[i * ny + j] = 10.0 + 2.0 * i as f64;
+                if i == nx - 1 {
+                    frac[i * ny + j] = 0.0;
+                }
+            }
+        }
+        let (peak, _) = surface_peak(&frac, &vm, nx, ny, 1);
+        // Last full column i = nx-2 has vm 10 + 2 (nx-2) = 30; its surface is 0.5 cell on: 31.
+        assert!((peak - 31.0).abs() < 0.3, "peak {peak}");
     }
 
     #[test]

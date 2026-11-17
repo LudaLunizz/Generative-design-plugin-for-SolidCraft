@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
@@ -57,7 +57,7 @@ manifest = {
                      {"const": "auto", "title": "Automatic (across the thinnest direction)"},
                      {"const": "xy", "title": "XY (thickness along Z)"}, {"const": "xz", "title": "XZ (thickness along Y)"},
                      {"const": "yz", "title": "YZ (thickness along X)"}]},
-                 "resolution": {"type": "integer", "title": "Cells along the longer side", "default": 120, "minimum": 10, "maximum": 400},
+                 "resolution": {"type": "integer", "title": "Cells along the longer side", "default": 240, "minimum": 10, "maximum": 400},
                  "picture": {"type": "boolean", "title": "Text heat map", "default": True}}}},
             {"name": "solver-benchmark", "effect": "read",
              "input_schema": {"type": "object", "properties": {
