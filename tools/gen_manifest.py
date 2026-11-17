@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
@@ -40,10 +40,23 @@ manifest = {
                      {"const": "any", "title": "All materials"}, {"const": "metal", "title": "Metals"},
                      {"const": "polymer", "title": "Plastics"}]},
                  "safety_factor": sf}}},
+            {"name": "solver-benchmark", "effect": "read",
+             "input_schema": {"type": "object", "properties": {
+                 "nx": {"type": "integer", "title": "Cells along X", "default": 60, "minimum": 2, "maximum": 2000},
+                 "ny": {"type": "integer", "title": "Cells along Y", "default": 30, "minimum": 2, "maximum": 2000},
+                 "iterations": {"type": "integer", "title": "Design iterations", "default": 50, "minimum": 1, "maximum": 1000},
+                 "load": {"type": "string", "title": "Test case", "default": "cantilever", "oneOf": [
+                     {"const": "cantilever", "title": "Cantilever (left edge fixed, load at right middle)"},
+                     {"const": "mbb", "title": "MBB beam (half, symmetric)"}]},
+                 "volfrac": {"type": "number", "title": "Material share", "default": 0.5, "minimum": 0.05, "maximum": 0.95},
+                 "rmin": {"type": "number", "title": "Filter radius (cells)", "default": 1.5, "minimum": 1, "maximum": 10},
+                 "cg_tol": {"type": "number", "title": "Solver tolerance", "default": 1e-6, "minimum": 1e-12, "maximum": 0.1},
+                 "cg_max": {"type": "integer", "title": "Solver step limit", "default": 20000, "minimum": 1, "maximum": 100000},
+                 "picture": {"type": "boolean", "title": "Text picture of the result", "default": True}}}},
         ],
         "commands": sorted(["document.inspect", "inspect.measure", "material.assign", "material.create",
                             "material.list"]),
-        "limits": {"fuel": 2000000000, "memory_mib": 64, "deadline_ms": 15000},
+        "limits": {"fuel": 100000000000, "memory_mib": 64, "deadline_ms": 30000},
     },
 }
 text = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"

@@ -6,6 +6,7 @@
 
 pub mod engine;
 pub mod library;
+pub mod topo2d;
 
 #[cfg(target_arch = "wasm32")]
 mod component;

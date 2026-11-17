@@ -1,7 +1,7 @@
 {
   "id": "gen-design-engine",
   "name": "Generative Design Engine",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Engineering material library with sourced cards (density, stiffness, strength), applied to bodies, plus a mass and allowable-stress report. Generative design comes in a later version.",
   "capabilities": [
     "commands@0.1"
@@ -161,6 +161,84 @@
             }
           }
         }
+      },
+      {
+        "name": "solver-benchmark",
+        "effect": "read",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "nx": {
+              "type": "integer",
+              "title": "Cells along X",
+              "default": 60,
+              "minimum": 2,
+              "maximum": 2000
+            },
+            "ny": {
+              "type": "integer",
+              "title": "Cells along Y",
+              "default": 30,
+              "minimum": 2,
+              "maximum": 2000
+            },
+            "iterations": {
+              "type": "integer",
+              "title": "Design iterations",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "load": {
+              "type": "string",
+              "title": "Test case",
+              "default": "cantilever",
+              "oneOf": [
+                {
+                  "const": "cantilever",
+                  "title": "Cantilever (left edge fixed, load at right middle)"
+                },
+                {
+                  "const": "mbb",
+                  "title": "MBB beam (half, symmetric)"
+                }
+              ]
+            },
+            "volfrac": {
+              "type": "number",
+              "title": "Material share",
+              "default": 0.5,
+              "minimum": 0.05,
+              "maximum": 0.95
+            },
+            "rmin": {
+              "type": "number",
+              "title": "Filter radius (cells)",
+              "default": 1.5,
+              "minimum": 1,
+              "maximum": 10
+            },
+            "cg_tol": {
+              "type": "number",
+              "title": "Solver tolerance",
+              "default": 1e-06,
+              "minimum": 1e-12,
+              "maximum": 0.1
+            },
+            "cg_max": {
+              "type": "integer",
+              "title": "Solver step limit",
+              "default": 20000,
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "picture": {
+              "type": "boolean",
+              "title": "Text picture of the result",
+              "default": true
+            }
+          }
+        }
       }
     ],
     "commands": [
@@ -171,9 +249,9 @@
       "material.list"
     ],
     "limits": {
-      "fuel": 2000000000,
+      "fuel": 100000000000,
       "memory_mib": 64,
-      "deadline_ms": 15000
+      "deadline_ms": 30000
     }
   }
 }

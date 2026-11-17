@@ -53,6 +53,7 @@ pub fn execute<H: Host>(host: &mut H, entry: &str, params: &str) -> Result<Strin
         "materials" => materials(&library, parse(params)?),
         "apply-material" => apply_material(host, &library, parse(params)?)?,
         "material-report" => material_report(host, &library, parse(params)?)?,
+        "solver-benchmark" => solver_benchmark(host, parse(params)?)?,
         other => return Err(Failure::input("entry", format!("unknown entry {:?}", truncate(other, 64)))),
     };
     serde_json::to_string(&result).map_err(|e| Failure::Internal(format!("could not encode the result: {e}")))
@@ -343,6 +344,94 @@ fn material_report<H: Host>(host: &mut H, library: &Library, p: ReportParams) ->
     }))
 }
 
+// ---------------------------------------------------------------------------------------------
+// solver-benchmark: run 2D SIMP on a standard test case and report the work done (read, no app
+// commands). Time is measured outside (solidcraft-cli --timings): without the clock permission
+// the plugin's clock is a fixed epoch.
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BenchParams {
+    pub nx: usize,
+    pub ny: usize,
+    pub iterations: usize,
+    pub load: String,
+    pub volfrac: f64,
+    pub rmin: f64,
+    pub cg_tol: f64,
+    pub cg_max: usize,
+    pub picture: bool,
+}
+
+impl Default for BenchParams {
+    fn default() -> Self {
+        Self { nx: 60, ny: 30, iterations: 50, load: "cantilever".into(), volfrac: 0.5, rmin: 1.5, cg_tol: 1e-6, cg_max: 20_000, picture: true }
+    }
+}
+
+impl BenchParams {
+    pub fn problem<E>(&self) -> Result<crate::topo2d::Problem, Failure<E>> {
+        use crate::topo2d::{LoadCase, Problem};
+        let load = match self.load.as_str() {
+            "cantilever" => LoadCase::Cantilever,
+            "mbb" => LoadCase::Mbb,
+            _ => return Err(Failure::input("load", "expected cantilever or mbb")),
+        };
+        let p = Problem {
+            nx: self.nx,
+            ny: self.ny,
+            volfrac: self.volfrac,
+            penal: 3.0,
+            rmin: self.rmin,
+            nu: 0.3,
+            load,
+            max_iterations: self.iterations,
+            change_tol: 0.0,
+            cg_tol: self.cg_tol,
+            cg_max: self.cg_max,
+        };
+        p.check().map_err(|reason| Failure::input("params", reason))?;
+        Ok(p)
+    }
+}
+
+/// The benchmark's JSON report for a finished run.
+pub fn bench_report(p: &crate::topo2d::Problem, out: &crate::topo2d::Outcome, picture: bool) -> Value {
+    let cg: Vec<usize> = out.history.iter().map(|i| i.cg_iterations).collect();
+    let total_cg: usize = cg.iter().sum();
+    let elements = p.nx * p.ny;
+    let compliance: Vec<f64> = out.history.iter().map(|i| round(i.compliance, 4)).collect();
+    json!({
+        "elements": elements,
+        "dofs": p.ndof(),
+        "design_iterations": out.history.len(),
+        "cg_iterations_total": total_cg,
+        "cg_iterations_per_design_iteration": cg,
+        "all_solves_converged": out.history.iter().all(|i| i.cg_converged),
+        // One stiffness product touches every element once: 8x8 multiply-adds per element.
+        "element_products": (total_cg + out.history.len()) * elements,
+        "compliance_first": compliance.first(),
+        "compliance_last": compliance.last(),
+        "volume_last": out.history.last().map(|i| round(i.volume, 4)),
+        "change_last": out.history.last().map(|i| round(i.change, 4)),
+        "cancelled": out.cancelled,
+        "picture": if picture { json!(crate::topo2d::ascii(&out.density, p.nx, p.ny, 60)) } else { Value::Null },
+    })
+}
+
+fn solver_benchmark<H: Host>(host: &mut H, b: BenchParams) -> Result<Value, Failure<H::Error>> {
+    let p = b.problem()?;
+    let total = p.max_iterations;
+    let out = crate::topo2d::optimise(&p, |it, i| {
+        host.progress((it + 1) as f32 / total as f32, &format!("Iteration {} of {total}, compliance {:.3}", it + 1, i.compliance));
+        !host.cancelled()
+    });
+    if out.cancelled {
+        return Err(Failure::Cancelled);
+    }
+    Ok(bench_report(&p, &out, b.picture))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -574,6 +663,18 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_runs_and_checks_its_input() {
+        let mut host = Fake::default();
+        let out = run(&mut host, "solver-benchmark", json!({"nx": 20, "ny": 10, "iterations": 5})).unwrap();
+        assert_eq!(out["design_iterations"], 5);
+        assert_eq!(out["elements"], 200);
+        assert!(host.calls.is_empty());
+        for bad in [json!({"nx": 1}), json!({"load": "x"}), json!({"nx": 2000, "ny": 2000}), json!({"volfrac": 2})] {
+            assert!(matches!(run(&mut host, "solver-benchmark", bad.clone()), Err(Failure::Input { .. })), "{bad}");
+        }
+    }
+
+    #[test]
     fn hostile_params_never_panic() {
         let mut host = Fake::with_bodies(&["Bracket"]);
         let long = "x".repeat(100_000);
@@ -588,7 +689,7 @@ mod tests {
             "\u{0}".to_string(),
             "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[".to_string(),
         ];
-        for entry in ["materials", "apply-material", "material-report", "", &long] {
+        for entry in ["materials", "apply-material", "material-report", "solver-benchmark", "", &long] {
             for s in &samples {
                 let _ = execute(&mut host, entry, s);
             }

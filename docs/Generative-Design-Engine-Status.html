@@ -21,7 +21,7 @@ li { margin-bottom: 2pt; }
 p { margin: 5pt 0; }
 </style></head><body>
 <h1>Generative Design Engine - Status</h1>
-<div class="sub">SolidCraft plugin · version 0.2.0 · 17 Nov 2026 · ~/project SolidCraft/generative-design-engine (local git)</div>
+<div class="sub">SolidCraft plugin · version 0.2.1 · 17 Nov 2026 · ~/project SolidCraft/generative-design-engine (local git)</div>
 
 <div class="box"><b>In short:</b> the 0.1 plugin did not work and its results were made up. It is rebuilt as a real SolidCraft component with an 11-material engineering library (SolidCraft's own material cards) and a per-body material report. It is installed in SolidCraft 0.42 and passes an end-to-end test there. Generative design and stress analysis are withdrawn until a real solver backs them.</div>
 
@@ -65,6 +65,22 @@ p { margin: 5pt 0; }
 <li>0.42's <code>plugin.install</code> takes only path, replace and dry_run (the docs describe a newer one with approvals).</li>
 </ul>
 
+<h2>Solver benchmark (17 Nov, v0.2.1)</h2>
+<p>New: a 2D stress solver and SIMP optimiser (<code>src/topo2d.rs</code>, own code from the textbook method: bilinear plane-stress cells, Jacobi-preconditioned conjugate gradients, density filter, optimality-criteria update) and a <code>solver-benchmark</code> entry. Checks: a solid cantilever matches beam theory within a few percent; the cantilever and MBB results show the known truss layouts; compliance drops about 5x at 50% material.</p>
+<table><tr><th>Grid</th><th>Iterations</th><th>Native</th><th>In SolidCraft</th><th>Ratio</th></tr>
+<tr><td>60 x 30</td><td>20</td><td>0.48 s</td><td>2.0 s</td><td>4.3x</td></tr>
+<tr><td>120 x 60</td><td>5</td><td>0.80 s</td><td>3.4 s</td><td>4.2x</td></tr>
+<tr><td>180 x 90</td><td>3</td><td>1.5 s</td><td>6.2 s</td><td>4.0x</td></tr>
+<tr><td>240 x 120</td><td>2</td><td>2.2 s</td><td>out of fuel</td><td>-</td></tr>
+<tr><td>120 x 60</td><td>20</td><td>3.8 s</td><td>out of fuel</td><td>-</td></tr></table>
+<p>A full run (100 iterations) takes 2.4 s native at 60 x 30 and 20 s at 120 x 60, so inside SolidCraft only the smallest grid fits today. Two causes, both fixable:</p>
+<ul>
+<li><b>Too many solver steps:</b> the simple preconditioner needs about 320 steps per stress solve at 60 x 30 and about 1400 at 240 x 120, growing with the grid. A multigrid preconditioner needs a few dozen whatever the size (expected 20-50x fewer).</li>
+<li><b>A slow inner loop:</b> one cell's stiffness product costs about 2600 fuel (Wasm operations) where about 200 should do; the bounds-checked lookups and recomputed node numbers can go (expected about 5-10x).</li>
+</ul>
+<p>Limits: fuel is a setting (Preferences › Plugins, default ceiling 1e11, the plugin asks for 1e11); the 30 s deadline is fixed. Inside SolidCraft runs 4x slower than native. Target after both fixes: 120 x 60 with 100 iterations in a few seconds.</p>
+<p>Scripts: <code>tests/bench-wasm.sh</code> (in SolidCraft + native + fuel bisection), <code>cargo run --release --example bench -- NX NY ITERATIONS [cantilever|mbb]</code>.</p>
+
 <h2>Next</h2>
 <ul>
 <li>Check the library values against the standards and datasheets (research round), add your filaments' datasheet values.</li>
@@ -73,7 +89,7 @@ p { margin: 5pt 0; }
 
 <h2>Paths</h2>
 <pre>Source:     ~/project SolidCraft/generative-design-engine  (git: cb61637)
-Package:    dist/gen-design-engine-0.2.0.zip (+ .sha256)
+Package:    dist/gen-design-engine-0.2.1.zip (+ .sha256)
 Installed:  ~/.local/share/solidcraft/plugins/gen-design-engine
 Old 0.1:    winExtra/0000 Claude deprecated/SolidCraft/.generative-design-engine.bak-before-rewrite</pre>
 </body></html>
