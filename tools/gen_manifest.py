@@ -52,6 +52,8 @@ manifest = {
                  "rmin": {"type": "number", "title": "Filter radius (cells)", "default": 1.5, "minimum": 1, "maximum": 10},
                  "cg_tol": {"type": "number", "title": "Solver tolerance", "default": 1e-6, "minimum": 1e-12, "maximum": 0.1},
                  "cg_max": {"type": "integer", "title": "Solver step limit", "default": 20000, "minimum": 1, "maximum": 100000},
+                 "solver": {"type": "string", "title": "Solver", "default": "multigrid", "oneOf": [
+                     {"const": "multigrid", "title": "Multigrid (fast)"}, {"const": "jacobi", "title": "Jacobi (simple, for comparison)"}]},
                  "picture": {"type": "boolean", "title": "Text picture of the result", "default": True}}}},
         ],
         "commands": sorted(["document.inspect", "inspect.measure", "material.assign", "material.create",

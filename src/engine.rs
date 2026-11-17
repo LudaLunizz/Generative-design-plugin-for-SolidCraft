@@ -361,17 +361,23 @@ pub struct BenchParams {
     pub cg_tol: f64,
     pub cg_max: usize,
     pub picture: bool,
+    pub solver: String,
 }
 
 impl Default for BenchParams {
     fn default() -> Self {
-        Self { nx: 60, ny: 30, iterations: 50, load: "cantilever".into(), volfrac: 0.5, rmin: 1.5, cg_tol: 1e-6, cg_max: 20_000, picture: true }
+        Self { nx: 60, ny: 30, iterations: 50, load: "cantilever".into(), volfrac: 0.5, rmin: 1.5, cg_tol: 1e-6, cg_max: 20_000, picture: true, solver: "multigrid".into() }
     }
 }
 
 impl BenchParams {
     pub fn problem<E>(&self) -> Result<crate::topo2d::Problem, Failure<E>> {
-        use crate::topo2d::{LoadCase, Problem};
+        use crate::topo2d::{LoadCase, Problem, Solver};
+        let solver = match self.solver.as_str() {
+            "multigrid" => Solver::Multigrid,
+            "jacobi" => Solver::Jacobi,
+            _ => return Err(Failure::input("solver", "expected multigrid or jacobi")),
+        };
         let load = match self.load.as_str() {
             "cantilever" => LoadCase::Cantilever,
             "mbb" => LoadCase::Mbb,
@@ -389,6 +395,7 @@ impl BenchParams {
             change_tol: 0.0,
             cg_tol: self.cg_tol,
             cg_max: self.cg_max,
+            solver,
         };
         p.check().map_err(|reason| Failure::input("params", reason))?;
         Ok(p)
@@ -408,6 +415,8 @@ pub fn bench_report(p: &crate::topo2d::Problem, out: &crate::topo2d::Outcome, pi
         "cg_iterations_total": total_cg,
         "cg_iterations_per_design_iteration": cg,
         "all_solves_converged": out.history.iter().all(|i| i.cg_converged),
+        "solver": match p.solver { crate::topo2d::Solver::Jacobi => "jacobi", crate::topo2d::Solver::Multigrid => "multigrid" },
+        "multigrid_levels": out.history.first().map(|i| i.levels),
         // One stiffness product touches every element once: 8x8 multiply-adds per element.
         "element_products": (total_cg + out.history.len()) * elements,
         "compliance_first": compliance.first(),

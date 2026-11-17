@@ -6,7 +6,12 @@
 //! system solved matrix-free with Jacobi-preconditioned conjugate gradients (no assembled matrix,
 //! so memory stays a few vectors long), warm-started from the previous design's displacements.
 //!
+//! The solver is matrix-free conjugate gradients, preconditioned with Jacobi or a geometric
+//! multigrid V-cycle (`mg2d`).
+//!
 //! Everything is bounded by `Problem::check`; nothing here panics on any input that passes it.
+
+use crate::mg2d::{Cells, Hierarchy, Level, Settings, cell_dofs};
 
 /// One element's 8x8 stiffness for Young's modulus 1, in DOF order
 /// (n0x, n0y, n1x, n1y, n2x, n2y, n3x, n3y) with nodes counter-clockwise from bottom-left.
@@ -79,6 +84,7 @@ pub struct Problem {
     pub change_tol: f64,
     pub cg_tol: f64,
     pub cg_max: usize,
+    pub solver: Solver,
 }
 
 pub const MAX_ELEMENTS: usize = 250_000;
@@ -113,12 +119,7 @@ impl Problem {
         2 * (self.nx + 1) * (self.ny + 1)
     }
     fn element_dofs(&self, ex: usize, ey: usize) -> [usize; 8] {
-        let n = self.nodes_y();
-        let n0 = ex * n + ey;
-        let n1 = (ex + 1) * n + ey;
-        let n2 = (ex + 1) * n + ey + 1;
-        let n3 = ex * n + ey + 1;
-        [2 * n0, 2 * n0 + 1, 2 * n1, 2 * n1 + 1, 2 * n2, 2 * n2 + 1, 2 * n3, 2 * n3 + 1]
+        cell_dofs(self.ny, ex, ey)
     }
     /// Fixed DOFs as a mask, and the load vector.
     fn supports_and_load(&self) -> (Vec<bool>, Vec<f64>) {
@@ -154,87 +155,34 @@ impl Problem {
     }
 }
 
-/// The stiffness operator for one design: K(E) u, matrix-free.
-struct Operator<'a> {
-    p: &'a Problem,
-    ke: &'a [[f64; 8]; 8],
-    modulus: &'a [f64],
-    fixed: &'a [bool],
-}
-
-impl Operator<'_> {
-    fn apply(&self, u: &[f64], y: &mut [f64]) {
-        y.iter_mut().for_each(|v| *v = 0.0);
-        let mut e = 0;
-        for ex in 0..self.p.nx {
-            for ey in 0..self.p.ny {
-                let m = self.modulus.get(e).copied().unwrap_or(0.0);
-                e += 1;
-                let dofs = self.p.element_dofs(ex, ey);
-                let mut ue = [0.0; 8];
-                for (k, d) in dofs.iter().enumerate() {
-                    if let (Some(slot), Some(v)) = (ue.get_mut(k), u.get(*d)) {
-                        *slot = *v;
-                    }
-                }
-                for (row, d) in self.ke.iter().zip(dofs) {
-                    let s: f64 = row.iter().zip(&ue).map(|(a, b)| a * b).sum();
-                    if let Some(out) = y.get_mut(d) {
-                        *out += m * s;
-                    }
-                }
-            }
-        }
-        for (out, fixed) in y.iter_mut().zip(self.fixed) {
-            if *fixed {
-                *out = 0.0;
-            }
-        }
-    }
-
-    fn diagonal(&self) -> Vec<f64> {
-        let mut diag = vec![0.0; self.p.ndof()];
-        let mut e = 0;
-        for ex in 0..self.p.nx {
-            for ey in 0..self.p.ny {
-                let m = self.modulus.get(e).copied().unwrap_or(0.0);
-                e += 1;
-                for (k, d) in self.p.element_dofs(ex, ey).iter().enumerate() {
-                    if let (Some(out), Some(row)) = (diag.get_mut(*d), self.ke.get(k)) {
-                        *out += m * row.get(k).copied().unwrap_or(0.0);
-                    }
-                }
-            }
-        }
-        for (v, fixed) in diag.iter_mut().zip(self.fixed) {
-            if *fixed || *v <= 0.0 {
-                *v = 1.0;
-            }
-        }
-        diag
-    }
+/// How the stiffness system is solved: conjugate gradients with a preconditioner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Solver {
+    /// Diagonal (Jacobi) preconditioner: cheap per step, many steps on fine grids.
+    Jacobi,
+    /// One geometric multigrid V-cycle per step: a few dozen steps at any grid size.
+    Multigrid,
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// Jacobi-preconditioned conjugate gradients from the start value in `u`. Returns the iterations.
-fn pcg(op: &Operator, f: &[f64], u: &mut [f64], tol: f64, max: usize) -> (usize, bool) {
+/// Preconditioned conjugate gradients from the start value in `u`. Returns the iterations.
+fn pcg(op: &Level, precondition: &dyn Fn(&[f64]) -> Vec<f64>, f: &[f64], u: &mut [f64], tol: f64, max: usize) -> (usize, bool) {
     let n = f.len();
-    for (v, fixed) in u.iter_mut().zip(op.fixed) {
+    for (v, fixed) in u.iter_mut().zip(&op.fixed) {
         if *fixed {
             *v = 0.0;
         }
     }
-    let diag = op.diagonal();
     let mut r = vec![0.0; n];
     op.apply(u, &mut r);
-    for ((ri, fi), fixed) in r.iter_mut().zip(f).zip(op.fixed) {
+    for ((ri, fi), fixed) in r.iter_mut().zip(f).zip(&op.fixed) {
         *ri = if *fixed { 0.0 } else { fi - *ri };
     }
     let fnorm = dot(f, f).sqrt().max(f64::MIN_POSITIVE);
-    let mut z: Vec<f64> = r.iter().zip(&diag).map(|(a, d)| a / d).collect();
+    let mut z = precondition(&r);
     let mut p = z.clone();
     let mut rz = dot(&r, &z);
     let mut q = vec![0.0; n];
@@ -248,15 +196,11 @@ fn pcg(op: &Operator, f: &[f64], u: &mut [f64], tol: f64, max: usize) -> (usize,
             return (it, false);
         }
         let alpha = rz / pq;
-        for i in 0..n {
-            if let (Some(ui), Some(pi), Some(ri), Some(qi)) = (u.get_mut(i), p.get(i), r.get_mut(i), q.get(i)) {
-                *ui += alpha * pi;
-                *ri -= alpha * qi;
-            }
+        for ((ui, pi), (ri, qi)) in u.iter_mut().zip(&p).zip(r.iter_mut().zip(&q)) {
+            *ui += alpha * pi;
+            *ri -= alpha * qi;
         }
-        for ((zi, ri), di) in z.iter_mut().zip(&r).zip(&diag) {
-            *zi = ri / di;
-        }
+        z = precondition(&r);
         let rz_new = dot(&r, &z);
         let beta = rz_new / rz;
         rz = rz_new;
@@ -273,16 +217,34 @@ pub struct Analysis {
     pub compliance: f64,
     pub cg_iterations: usize,
     pub converged: bool,
+    /// Multigrid levels used (1 for Jacobi).
+    pub levels: usize,
 }
 
 pub fn analyse(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>) -> Analysis {
-    let ke = element_stiffness(p.nu);
     let (fixed, f) = p.supports_and_load();
-    let op = Operator { p, ke: &ke, modulus, fixed: &fixed };
+    let fine = Level { nx: p.nx, ny: p.ny, cells: Cells::Scaled { ke: Box::new(element_stiffness(p.nu)), modulus: modulus.to_vec() }, fixed };
     let mut u = start.filter(|s| s.len() == f.len()).unwrap_or_else(|| vec![0.0; f.len()]);
-    let (cg_iterations, converged) = pcg(&op, &f, &mut u, p.cg_tol, p.cg_max);
+    let (cg_iterations, converged, levels) = match p.solver {
+        Solver::Jacobi => {
+            let inv: Vec<f64> = fine.diagonal().iter().map(|d| 1.0 / d).collect();
+            let jacobi = |r: &[f64]| r.iter().zip(&inv).map(|(a, d)| a * d).collect();
+            let (it, ok) = pcg(&fine, &jacobi, &f, &mut u, p.cg_tol, p.cg_max);
+            (it, ok, 1)
+        }
+        Solver::Multigrid => {
+            let h = Hierarchy::new(fine, Settings::default());
+            match h.fine() {
+                Some(op) => {
+                    let (it, ok) = pcg(op, &|r: &[f64]| h.precondition(r), &f, &mut u, p.cg_tol, p.cg_max);
+                    (it, ok, h.depth())
+                }
+                None => (0, false, 0),
+            }
+        }
+    };
     let compliance = dot(&f, &u);
-    Analysis { u, compliance, cg_iterations, converged }
+    Analysis { u, compliance, cg_iterations, converged, levels }
 }
 
 pub struct Iteration {
@@ -291,6 +253,7 @@ pub struct Iteration {
     pub change: f64,
     pub cg_iterations: usize,
     pub cg_converged: bool,
+    pub levels: usize,
 }
 
 pub struct Outcome {
@@ -413,6 +376,7 @@ pub fn optimise(p: &Problem, mut step: impl FnMut(usize, &Iteration) -> bool) ->
             change,
             cg_iterations: a.cg_iterations,
             cg_converged: a.converged,
+            levels: a.levels,
         };
         u = Some(a.u);
         let go_on = step(it, &iteration);
@@ -477,6 +441,7 @@ mod tests {
             change_tol: 0.01,
             cg_tol: 1e-8,
             cg_max: 20_000,
+            solver: Solver::Multigrid,
         }
     }
 

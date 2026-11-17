@@ -232,6 +232,21 @@
               "minimum": 1,
               "maximum": 100000
             },
+            "solver": {
+              "type": "string",
+              "title": "Solver",
+              "default": "multigrid",
+              "oneOf": [
+                {
+                  "const": "multigrid",
+                  "title": "Multigrid (fast)"
+                },
+                {
+                  "const": "jacobi",
+                  "title": "Jacobi (simple, for comparison)"
+                }
+              ]
+            },
             "picture": {
               "type": "boolean",
               "title": "Text picture of the result",
