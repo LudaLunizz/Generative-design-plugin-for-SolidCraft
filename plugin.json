@@ -1,270 +1,179 @@
 {
   "id": "gen-design-engine",
   "name": "Generative Design Engine",
-  "version": "0.1.0",
-  "description": "AI-powered generative design with preset constraints, stress thresholds, and topology optimization",
-  "capabilities": ["commands@0.1"],
+  "version": "0.2.0",
+  "description": "Engineering material library with sourced cards (density, stiffness, strength), applied to bodies, plus a mass and allowable-stress report. Generative design comes in a later version.",
+  "capabilities": [
+    "commands@0.1"
+  ],
   "runtime": {
     "module": "plugin.wasm",
     "entries": [
       {
-        "name": "optimize",
+        "name": "apply-material",
         "effect": "edit",
+        "slots": [
+          {
+            "kind": "ribbon",
+            "name": "Manage"
+          }
+        ],
         "input_schema": {
           "type": "object",
+          "required": [
+            "material"
+          ],
           "properties": {
-            "constraints": {
-              "type": "object",
-              "title": "Design Constraints",
-              "properties": {
-                "material": {
-                  "type": "string",
-                  "title": "Material",
-                  "default": "Aluminum 6061-T6",
-                  "description": "Base material for the design"
+            "material": {
+              "type": "string",
+              "title": "Material",
+              "default": "aluminium-6061-t6",
+              "oneOf": [
+                {
+                  "const": "aluminium-6061-t6",
+                  "title": "Aluminium 6061-T6"
                 },
-                "density": {
-                  "type": "number",
-                  "title": "Density",
-                  "default": 2.7,
-                  "minimum": 0.1,
-                  "maximum": 20,
-                  "description": "Material density in g/cm³"
+                {
+                  "const": "aluminium-7075-t6",
+                  "title": "Aluminium 7075-T6"
                 },
-                "yield_strength": {
-                  "type": "number",
-                  "title": "Yield Strength",
-                  "default": 276,
-                  "minimum": 10,
-                  "maximum": 2000,
-                  "description": "Material yield strength in MPa"
+                {
+                  "const": "steel-s235jr",
+                  "title": "Steel S235JR"
                 },
-                "safety_factor": {
-                  "type": "number",
-                  "title": "Safety Factor",
-                  "default": 2.0,
-                  "minimum": 1.0,
-                  "maximum": 10.0,
-                  "description": "Target safety factor for stress analysis"
+                {
+                  "const": "steel-s355jr",
+                  "title": "Steel S355JR"
                 },
-                "max_stress": {
-                  "type": "number",
-                  "title": "Maximum Stress",
-                  "default": 125,
-                  "minimum": 5,
-                  "maximum": 1000,
-                  "description": "Maximum allowable stress in MPa"
+                {
+                  "const": "stainless-304",
+                  "title": "Stainless steel 304"
+                },
+                {
+                  "const": "stainless-316l",
+                  "title": "Stainless steel 316L"
+                },
+                {
+                  "const": "titanium-ti6al4v",
+                  "title": "Titanium Ti-6Al-4V"
+                },
+                {
+                  "const": "pla-printed",
+                  "title": "PLA (3D printed, generic)"
+                },
+                {
+                  "const": "petg-printed",
+                  "title": "PETG (3D printed, generic)"
+                },
+                {
+                  "const": "abs-printed",
+                  "title": "ABS (3D printed, generic)"
+                },
+                {
+                  "const": "pa12-sls",
+                  "title": "Nylon PA12 (SLS printed, generic)"
                 }
-              },
-              "required": ["material"]
+              ],
+              "description": "Creates this material with its engineering card in the design (once) and assigns it"
             },
-            "parameters": {
-              "type": "object",
-              "title": "Design Parameters",
-              "properties": {
-                "target_volume": {
-                  "type": "number",
-                  "title": "Target Volume",
-                  "default": 1000,
-                  "minimum": 10,
-                  "maximum": 1000000,
-                  "description": "Target volume in mm³"
-                },
-                "max_mass": {
-                  "type": "number",
-                  "title": "Maximum Mass",
-                  "default": 50,
-                  "minimum": 0.1,
-                  "maximum": 10000,
-                  "description": "Maximum mass in grams"
-                },
-                "min_wall": {
-                  "type": "number",
-                  "title": "Minimum Wall Thickness",
-                  "default": 2,
-                  "minimum": 0.5,
-                  "maximum": 20,
-                  "description": "Minimum wall thickness for manufacturing in mm"
-                }
-              }
-            },
-            "optimization": {
-              "type": "object",
-              "title": "Optimization Settings",
-              "properties": {
-                "method": {
-                  "type": "string",
-                  "title": "Topology Method",
-                  "enum": ["lsho", "lsd", "simulated_annealing", "gradient"],
-                  "default": "lsho",
-                  "description": "Optimization algorithm: lsho (Linear Static Half-Space Optimization), lsd (Level Set), simulated_annealing, gradient-based"
-                },
-                "iterations": {
-                  "type": "integer",
-                  "title": "Iterations",
-                  "default": 100,
-                  "minimum": 10,
-                  "maximum": 5000,
-                  "description": "Number of optimization iterations"
-                },
-                "filter_radius": {
-                  "type": "number",
-                  "title": "Filter Radius",
-                  "default": 1.5,
-                  "minimum": 0.1,
-                  "maximum": 10,
-                  "description": "Minimum feature size filter in mm"
-                },
-                "convergence": {
-                  "type": "number",
-                  "title": "Convergence Threshold",
-                  "default": 0.01,
-                  "minimum": 0.0001,
-                  "maximum": 1.0
-                },
-                "smoothing": {
-                  "type": "number",
-                  "title": "Smoothing Factor",
-                  "default": 0.5,
-                  "minimum": 0,
-                  "maximum": 1.0,
-                  "description": "Post-processing smoothing factor (0=none, 1=full)"
-                }
-              }
-            },
-            "loads": {
+            "bodies": {
               "type": "array",
-              "title": "Load Conditions",
+              "title": "Bodies",
               "items": {
-                "type": "object",
-                "properties": {
-                  "body": {"type": "string", "title": "Body Name"},
-                  "force": {
-                    "type": "array",
-                    "title": "Force Vector",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "description": "Force [Fx, Fy, Fz] in Newtons"
-                  },
-                  "moment": {
-                    "type": "array",
-                    "title": "Moment Vector",
-                    "items": {"type": "number"},
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "description": "Moment [Mx, My, Mz] in Nm"
-                  }
-                }
-              }
-            },
-            "output": {
-              "type": "object",
-              "title": "Output Settings",
-              "properties": {
-                "preserve_bodies": {
-                  "type": "array",
-                  "title": "Preserve Bodies",
-                  "items": {"type": "string"},
-                  "description": "Body names to preserve unchanged"
-                },
-                "create_lattice": {
-                  "type": "object",
-                  "title": "Lattice Settings",
-                  "properties": {
-                    "inner": {
-                      "type": "boolean",
-                      "title": "Inner Lattice",
-                      "default": false
-                    },
-                    "outer": {
-                      "type": "boolean",
-                      "title": "Outer Lattice",
-                      "default": false
-                    },
-                    "structure": {
-                      "type": "string",
-                      "title": "Lattice Structure",
-                      "enum": ["body_centered_cubic", "face_centered_cubic", "octet_truss", "gyroid"],
-                      "default": "octet_truss"
-                    },
-                    "relative_density": {
-                      "type": "number",
-                      "title": "Relative Density",
-                      "default": 0.5,
-                      "minimum": 0.05,
-                      "maximum": 1.0
-                    }
-                  }
-                }
-              }
-            },
-            "tolerances": {
-              "type": "number",
-              "title": "Tolerances",
-              "default": 0.5,
-              "minimum": 0.01,
-              "maximum": 10,
-              "description": "Convergence tolerance"
+                "type": "string"
+              },
+              "default": [],
+              "description": "Body names; empty means every body in the design"
             }
           }
         }
       },
       {
-        "name": "analyze",
+        "name": "material-report",
         "effect": "read",
+        "slots": [
+          {
+            "kind": "ribbon",
+            "name": "Inspect"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {
-            "body": {
-              "type": "string",
-              "title": "Body Name",
-              "description": "Body name to analyze"
+            "bodies": {
+              "type": "array",
+              "title": "Bodies",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Body names; empty means every body in the design"
             },
-            "stress_limits": {
-              "type": "object",
-              "title": "Stress Limits",
-              "properties": {
-                "yield_strength": {
-                  "type": "number",
-                  "title": "Yield Strength",
-                  "default": 250,
-                  "description": "MPa"
-                },
-                "ultimate_strength": {
-                  "type": "number",
-                  "title": "Ultimate Strength",
-                  "default": 400,
-                  "description": "MPa"
-                },
-                "fatigue_strength": {
-                  "type": "number",
-                  "title": "Fatigue Strength",
-                  "default": 150,
-                  "description": "MPa"
-                }
-              }
-            },
-            "mesh_sampling": {
+            "safety_factor": {
               "type": "number",
-              "title": "Mesh Sampling",
-              "default": 0.5,
-              "minimum": 0.1,
-              "maximum": 5,
-              "description": "Factor for mesh sampling resolution"
+              "title": "Safety factor",
+              "default": 2.0,
+              "minimum": 1.0,
+              "maximum": 10.0,
+              "description": "Allowable stress = yield strength (or tensile strength when there is no yield) / safety factor"
             }
-          },
-          "required": ["body"]
+          }
+        }
+      },
+      {
+        "name": "materials",
+        "effect": "read",
+        "slots": [
+          {
+            "kind": "ribbon",
+            "name": "Manage"
+          }
+        ],
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "family": {
+              "type": "string",
+              "title": "Family",
+              "default": "any",
+              "oneOf": [
+                {
+                  "const": "any",
+                  "title": "All materials"
+                },
+                {
+                  "const": "metal",
+                  "title": "Metals"
+                },
+                {
+                  "const": "polymer",
+                  "title": "Plastics"
+                }
+              ]
+            },
+            "safety_factor": {
+              "type": "number",
+              "title": "Safety factor",
+              "default": 2.0,
+              "minimum": 1.0,
+              "maximum": 10.0,
+              "description": "Allowable stress = yield strength (or tensile strength when there is no yield) / safety factor"
+            }
+          }
         }
       }
     ],
     "commands": [
-      "commands.run"
+      "document.inspect",
+      "inspect.measure",
+      "material.assign",
+      "material.create",
+      "material.list"
     ],
     "limits": {
-      "fuel": 100000000000,
-      "memory_mib": 512,
-      "deadline_ms": 300000
+      "fuel": 2000000000,
+      "memory_mib": 64,
+      "deadline_ms": 15000
     }
   }
 }

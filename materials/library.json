@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "sources": {
+    "asm-typical": {
+      "title": "ASM handbook-style typical room-temperature values (typical, not guaranteed minimums)",
+      "kind": "public_reference",
+      "reference": "ASM Handbook Vol. 2 (non-ferrous) and Vol. 1 (ferrous) typical property tables; compiled for this library, re-check against the supplier's certificate"
+    },
+    "eurocode-steel": {
+      "title": "Eurocode design values for structural steel: E 210 GPa, nu 0.3, alpha 12e-6/K, density 7850 kg/m3",
+      "kind": "public_reference",
+      "reference": "EN 1993-1-1 clause 3.2.6 (E, nu, alpha); EN 1991-1-1 Annex A (density)"
+    },
+    "en10025-2": {
+      "title": "EN 10025-2 minimum values: yield for nominal thickness up to 16 mm, lowest tensile strength of the 3-100 mm range",
+      "kind": "public_reference",
+      "reference": "EN 10025-2:2019, hot rolled non-alloy structural steels"
+    },
+    "astm-a240": {
+      "title": "ASTM A240/A240M minimum tensile and 0.2% yield strength, annealed plate, sheet and strip",
+      "kind": "public_reference",
+      "reference": "ASTM A240/A240M, chromium and chromium-nickel stainless steel plate, sheet and strip"
+    },
+    "astm-b348": {
+      "title": "ASTM B348 Grade 5 minimum tensile and 0.2% yield strength, annealed bar",
+      "kind": "public_reference",
+      "reference": "ASTM B348/B348M, titanium and titanium alloy bars and billets"
+    },
+    "generic-print": {
+      "title": "Illustrative mid-range values for 3D-printed parts; real parts vary with the filament or powder, print direction and settings",
+      "kind": "illustrative",
+      "reference": "Replace with the values from your filament or powder datasheet, or from your own test prints"
+    }
+  },
+  "materials": [
+    {
+      "id": "aluminium-6061-t6",
+      "name": "Aluminium 6061-T6",
+      "color": "#b9bdc3",
+      "family": "metal",
+      "designation": "Aluminium alloy 6061 (EN AW-6061), temper T6",
+      "notes": "General machining alloy. Strength values are typical, not minimums.",
+      "properties": [
+        {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 2700.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 68.9e9, "poisson_ratio": 0.33}}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "yield_strength", "pa": 276e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "tensile_strength", "pa": 310e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "shear_strength", "pa": 207e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [167.0, 167.0, 167.0], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [23.6e-6, 23.6e-6, 23.6e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 896.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}}
+      ]
+    },
+    {
+      "id": "aluminium-7075-t6",
+      "name": "Aluminium 7075-T6",
+      "color": "#aeb3ba",
+      "family": "metal",
+      "designation": "Aluminium alloy 7075 (EN AW-7075), temper T6",
+      "notes": "High-strength alloy. Strength values are typical, not minimums.",
+      "properties": [
+        {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 2810.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 71.7e9, "poisson_ratio": 0.33}}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "yield_strength", "pa": 503e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "tensile_strength", "pa": 572e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "shear_strength", "pa": 331e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [130.0, 130.0, 130.0], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [23.4e-6, 23.4e-6, 23.4e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 960.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}}
+      ]
+    },
+    {
+      "id": "steel-s235jr",
+      "name": "Steel S235JR",
+      "color": "#7d8187",
+      "family": "metal",
+      "designation": "Structural steel S235JR (EN 10025-2), hot rolled, thickness up to 16 mm",
+      "notes": "Yield drops for thicker sections (EN 10025-2).",
+      "properties": [
+        {"source_id": "eurocode-steel", "data": {"kind": "density", "kg_m3": 7850.0}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
+        {"source_id": "eurocode-steel", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 210e9, "poisson_ratio": 0.3}}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
+        {"source_id": "en10025-2", "data": {"kind": "yield_strength", "pa": 235e6}, "conditions": {"temperature_k": 293.15, "state": "hot rolled, t <= 16 mm"}},
+        {"source_id": "en10025-2", "data": {"kind": "tensile_strength", "pa": 360e6}, "conditions": {"temperature_k": 293.15, "state": "hot rolled, 3 <= t <= 100 mm"}},
+        {"source_id": "eurocode-steel", "data": {"kind": "thermal_expansion", "per_k": [12e-6, 12e-6, 12e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}}
+      ]
+    },
+    {
+      "id": "steel-s355jr",
+      "name": "Steel S355JR",
+      "color": "#73777d",
+      "family": "metal",
+      "designation": "Structural steel S355JR (EN 10025-2), hot rolled, thickness up to 16 mm",
+      "notes": "Yield drops for thicker sections (EN 10025-2).",
+      "properties": [
+        {"source_id": "eurocode-steel", "data": {"kind": "density", "kg_m3": 7850.0}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
+        {"source_id": "eurocode-steel", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 210e9, "poisson_ratio": 0.3}}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
+        {"source_id": "en10025-2", "data": {"kind": "yield_strength", "pa": 355e6}, "conditions": {"temperature_k": 293.15, "state": "hot rolled, t <= 16 mm"}},
+        {"source_id": "en10025-2", "data": {"kind": "tensile_strength", "pa": 470e6}, "conditions": {"temperature_k": 293.15, "state": "hot rolled, 3 <= t <= 100 mm"}},
+        {"source_id": "eurocode-steel", "data": {"kind": "thermal_expansion", "per_k": [12e-6, 12e-6, 12e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}}
+      ]
+    },
+    {
+      "id": "stainless-304",
+      "name": "Stainless steel 304",
+      "color": "#c4c7cb",
+      "family": "metal",
+      "designation": "Austenitic stainless steel 304 (1.4301), annealed",
+      "notes": "Strengths are ASTM A240 minimums; cold-worked stock is stronger.",
+      "properties": [
+        {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 8000.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 193e9, "poisson_ratio": 0.29}}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "astm-a240", "data": {"kind": "yield_strength", "pa": 205e6}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "astm-a240", "data": {"kind": "tensile_strength", "pa": 515e6}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [16.2, 16.2, 16.2], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [17.3e-6, 17.3e-6, 17.3e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 500.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}}
+      ]
+    },
+    {
+      "id": "stainless-316l",
+      "name": "Stainless steel 316L",
+      "color": "#bfc3c8",
+      "family": "metal",
+      "designation": "Austenitic stainless steel 316L (1.4404), annealed",
+      "notes": "Strengths are ASTM A240 minimums.",
+      "properties": [
+        {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 8000.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 193e9, "poisson_ratio": 0.3}}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "astm-a240", "data": {"kind": "yield_strength", "pa": 170e6}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "astm-a240", "data": {"kind": "tensile_strength", "pa": 485e6}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [16.3, 16.3, 16.3], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [15.9e-6, 15.9e-6, 15.9e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 500.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}}
+      ]
+    },
+    {
+      "id": "titanium-ti6al4v",
+      "name": "Titanium Ti-6Al-4V",
+      "color": "#9a9ca3",
+      "family": "metal",
+      "designation": "Titanium alloy Ti-6Al-4V (Grade 5), annealed",
+      "notes": "Strengths are ASTM B348 Grade 5 minimums for annealed bar.",
+      "properties": [
+        {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 4430.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 113.8e9, "poisson_ratio": 0.342}}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "astm-b348", "data": {"kind": "yield_strength", "pa": 828e6}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "astm-b348", "data": {"kind": "tensile_strength", "pa": 895e6}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [6.7, 6.7, 6.7], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [8.6e-6, 8.6e-6, 8.6e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
+        {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 526.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}}
+      ]
+    },
+    {
+      "id": "pla-printed",
+      "name": "PLA (3D printed, generic)",
+      "color": "#e8e4d8",
+      "family": "polymer",
+      "designation": "Polylactic acid, FDM printed, loaded along the layers",
+      "notes": "Illustrative values. Across the layers (Z) a printed part is often much weaker. Creeps under steady load, softens around 55-60 C.",
+      "properties": [
+        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1240.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 3.0e9, "poisson_ratio": 0.36}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
+        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 50e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+      ]
+    },
+    {
+      "id": "petg-printed",
+      "name": "PETG (3D printed, generic)",
+      "color": "#9fc7d9",
+      "family": "polymer",
+      "designation": "Glycol-modified PET, FDM printed, loaded along the layers",
+      "notes": "Illustrative values. Across the layers (Z) a printed part is often much weaker.",
+      "properties": [
+        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1270.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.0e9, "poisson_ratio": 0.38}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
+        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 45e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+      ]
+    },
+    {
+      "id": "abs-printed",
+      "name": "ABS (3D printed, generic)",
+      "color": "#d8d2c6",
+      "family": "polymer",
+      "designation": "Acrylonitrile butadiene styrene, FDM printed, loaded along the layers",
+      "notes": "Illustrative values. Across the layers (Z) a printed part is often much weaker.",
+      "properties": [
+        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1040.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.0e9, "poisson_ratio": 0.35}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
+        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 35e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+      ]
+    },
+    {
+      "id": "pa12-sls",
+      "name": "Nylon PA12 (SLS printed, generic)",
+      "color": "#e6e6e2",
+      "family": "polymer",
+      "designation": "Polyamide 12, selective laser sintered",
+      "notes": "Illustrative values. SLS parts are closer to the same strength in every direction than FDM parts.",
+      "properties": [
+        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1010.0}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}},
+        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 1.7e9, "poisson_ratio": 0.39}}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}},
+        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 48e6}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}}
+      ]
+    }
+  ]
+}

@@ -1,9 +1,11 @@
 [package]
 name = "generative-design-engine"
-version = "0.1.0"
-edition = "2021"
-description = "Generative design engine for SolidCraft with topology optimization and stress analysis"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+description = "SolidCraft plugin: engineering material library, material reports; generative design to follow"
 license = "MIT"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -12,9 +14,21 @@ crate-type = ["cdylib", "rlib"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-[dev-dependencies]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
 
 [profile.release]
 lto = true
-opt-level = "z"
+opt-level = "s"
 codegen-units = 1
+panic = "abort"
+strip = true
