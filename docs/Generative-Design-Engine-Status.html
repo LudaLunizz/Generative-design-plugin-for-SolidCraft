@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Generative Design Engine - Status</title>
+<!-- House template for a plain dark document. Copy it, fill it in, build with:  mkpdf my-doc.html my-doc.pdf
+     Black page, light text, orange (#e95420) rules and boxes, Ubuntu fonts, A4. mkpdf also corrects a source that asks for
+     a white page (GUARD: lines) and exits with status 3 if the result is still not dark A4. -->
+<style>/* dark-pdf */ html { color: #f2f2f2; }
+@page { background: #000; size: A4; margin: 15mm 15mm; }
+body { font-family: "Ubuntu", "DejaVu Sans", sans-serif; font-size: 10pt; color: #f1f1f2; line-height: 1.4; }
+h1 { font-size: 19pt; margin: 0 0 2pt; color: #e95420; }
+.sub { color: #d1d1d1; margin-bottom: 12pt; }
+h2 { font-size: 12.5pt; color: #e95420; border-bottom: 1.5px solid #e95420; padding-bottom: 2pt; margin-top: 14pt; break-after: avoid; }
+h3 { font-size: 10.5pt; margin: 10pt 0 2pt; break-after: avoid; }
+code { font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace; background: #232323; padding: 0 3px; border-radius: 3px; font-size: 9.5pt; }
+pre { font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace; background: #202020; border-left: 3px solid #e95420; padding: 5pt 8pt; font-size: 9pt; white-space: pre-wrap; margin: 4pt 0 7pt; break-inside: avoid; }
+.box { background: #371100; border: 1px solid #963c16; border-radius: 4px; padding: 8pt 10pt; }
+table { border-collapse: collapse; width: 100%; margin: 4pt 0; }
+td, th { border: 1px solid #424242; padding: 3.5pt 6pt; vertical-align: top; text-align: left; }
+th { background: #202020; }
+tr { break-inside: avoid; }
+li { margin-bottom: 2pt; }
+p { margin: 5pt 0; }
+</style></head><body>
+<h1>Generative Design Engine - Status</h1>
+<div class="sub">SolidCraft plugin · version 0.2.0 · 17 Nov 2026 · ~/project SolidCraft/generative-design-engine (local git)</div>
+
+<div class="box"><b>In short:</b> the 0.1 plugin did not work and its results were made up. It is rebuilt as a real SolidCraft component with an 11-material engineering library (SolidCraft's own material cards) and a per-body material report. It is installed in SolidCraft 0.42 and passes an end-to-end test there. Generative design and stress analysis are withdrawn until a real solver backs them.</div>
+
+<h2>What was wrong in 0.1</h2>
+<ul>
+<li><code>plugin.wasm</code> was SolidCraft's sample test component (it makes two boxes), not this plugin's code. The Rust code was never built to WebAssembly.</li>
+<li><code>optimize</code> and <code>analyze</code> returned invented numbers: a fixed "original volume", stress = max_stress x 0.7, and the same critical point (25, 0, 0) for every part.</li>
+<li>The manifest would be refused: it granted the non-existent command <code>commands.run</code>, asked for a 300 s deadline (max 30 s) and 512 MiB (default ceiling 128 MiB).</li>
+<li>The material "library" was one default, with density in the wrong unit (2.7e-6).</li>
+</ul>
+
+<h2>What 0.2 does</h2>
+<table><tr><th>Entry</th><th>Effect</th><th>What it does</th></tr>
+<tr><td><code>apply-material</code></td><td>edit</td><td>Creates the library material once (density, look, full engineering card) and assigns it; empty body list = all bodies. One undo step.</td></tr>
+<tr><td><code>material-report</code></td><td>read</td><td>Per body: material, volume, mass, E, yield/tensile and allowable stress = strength / safety factor.</td></tr>
+<tr><td><code>materials</code></td><td>read</td><td>Lists the library.</td></tr></table>
+<p>In SolidCraft: Model tab, Plugins group/menu. The report gives the allowable stress, not the stress in the part: no solver runs.</p>
+
+<h2>Material library</h2>
+<table><tr><th>Id</th><th>kg/m3</th><th>E GPa</th><th>Yield MPa</th><th>Tensile MPa</th><th>Sources</th></tr>
+<tr><td><code>aluminium-6061-t6</code></td><td>2700</td><td>68.9</td><td>276</td><td>310</td><td>asm-typical</td></tr><tr><td><code>aluminium-7075-t6</code></td><td>2810</td><td>71.7</td><td>503</td><td>572</td><td>asm-typical</td></tr><tr><td><code>steel-s235jr</code></td><td>7850</td><td>210</td><td>235</td><td>360</td><td>en10025-2, eurocode-steel</td></tr><tr><td><code>steel-s355jr</code></td><td>7850</td><td>210</td><td>355</td><td>470</td><td>en10025-2, eurocode-steel</td></tr><tr><td><code>stainless-304</code></td><td>8000</td><td>193</td><td>205</td><td>515</td><td>asm-typical, astm-a240</td></tr><tr><td><code>stainless-316l</code></td><td>8000</td><td>193</td><td>170</td><td>485</td><td>asm-typical, astm-a240</td></tr><tr><td><code>titanium-ti6al4v</code></td><td>4430</td><td>113.8</td><td>828</td><td>895</td><td>asm-typical, astm-b348</td></tr><tr><td><code>pla-printed</code></td><td>1240</td><td>3</td><td>-</td><td>50</td><td>generic-print</td></tr><tr><td><code>petg-printed</code></td><td>1270</td><td>2</td><td>-</td><td>45</td><td>generic-print</td></tr><tr><td><code>abs-printed</code></td><td>1040</td><td>2</td><td>-</td><td>35</td><td>generic-print</td></tr><tr><td><code>pa12-sls</code></td><td>1010</td><td>1.7</td><td>-</td><td>48</td><td>generic-print</td></tr></table>
+<p>Values compiled from handbook and standard tables (ASM typical, EN 10025-2, Eurocode, ASTM A240, ASTM B348); <b>not yet checked against the documents</b>. The printed plastics are illustrative placeholders. Every card names its sources; SolidCraft lists them as needing review.</p>
+
+<h2>Hardening</h2>
+<ul>
+<li>Hostile input refused before any edit (unknown fields, non-objects, bad numbers, empty, duplicate or oversized body names). No unwrap/expect/panic/indexing outside tests (clippy-denied).</li>
+<li>Host errors pass through, so SolidCraft rolls back; cancel is checked before each edit; a same-named design material with other values is never overwritten.</li>
+<li>Limits 2e9 fuel / 64 MiB / 15 s, inside the default ceilings. The component imports only <code>craft:plugin</code> (no WASI); build.sh refuses anything else.</li>
+<li>plugin.json is generated from the library; a test fails if they drift.</li>
+</ul>
+
+<h2>Tests</h2>
+<ul>
+<li>24 Rust tests (library validation, fake-host tests of every entry, hostile params, manifest rules).</li>
+<li><code>tests/cli-test.sh</code> in the installed SolidCraft 0.42: all 11 materials pass SolidCraft's card check, masses correct, reapply reuses, undo, bad input refused, the saved design reopens with its materials without the plugin. Result: PASS.</li>
+</ul>
+
+<h2>SolidCraft 0.42 findings</h2>
+<ul>
+<li><code>material.list</code> and <code>material.inspect</code> only read but are not marked read-only, so a read entry may not call them. The report takes strengths from the library and checks the measured density.</li>
+<li>0.42's <code>plugin.install</code> takes only path, replace and dry_run (the docs describe a newer one with approvals).</li>
+</ul>
+
+<h2>Next</h2>
+<ul>
+<li>Check the library values against the standards and datasheets (research round), add your filaments' datasheet values.</li>
+<li>Generative design: needs a real solver. Options from the 28 Oct research: a voxel SIMP/FEA solver inside the plugin (wasm, deadline 30 s, mesh up to 8192 vertices), or NITO/TopoDiff models outside it.</li>
+</ul>
+
+<h2>Paths</h2>
+<pre>Source:     ~/project SolidCraft/generative-design-engine  (git: cb61637)
+Package:    dist/gen-design-engine-0.2.0.zip (+ .sha256)
+Installed:  ~/.local/share/solidcraft/plugins/gen-design-engine
+Old 0.1:    winExtra/0000 Claude deprecated/SolidCraft/.generative-design-engine.bak-before-rewrite</pre>
+</body></html>
