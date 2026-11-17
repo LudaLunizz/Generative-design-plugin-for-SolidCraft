@@ -107,6 +107,14 @@ p { margin: 5pt 0; }
 <p>Method: the body's mesh is sampled on a grid at mid-thickness (rays through the thickness), plane stress with the multigrid solver, von Mises stress per cell. Limits, all reported as warnings when they apply: flat parts of one thickness only; force through the plate ignored; linear elastic, small deflections, rigid supports, the load spread evenly; peaks at sharp inside corners depend on the grid (the 99th percentile is reported beside the peak).</p>
 <p>Also fixed: SolidCraft's plugin dialog cannot draw list fields and switched Run off for <code>apply-material</code> and <code>material-report</code>. They now have a <b>Body</b> text field (empty = all bodies); a new test checks that every entry stays drawable.</p>
 
+<h2>Wall foot: why the stress check cannot run on it (17 Nov)</h2>
+<ul>
+<li><b>It is a 3D part.</b> The foot (140 x 100 x 211 mm: wall plate, cone, 24 x 29 mm post, hinge head) is not a flat plate of one thickness; the 2D check would treat its side outline as 100 mm thick everywhere, and the worst case of 29 Oct (the 20 N poke, perpendicular to the screen) pushes through that outline, which plane stress ignores.</li>
+<li><b>The plugin cannot read its mesh.</b> SolidCraft hands meshes to plugins unwelded (three points per triangle): 6138 triangles = 18 414 points, over the plugin limit of 8192 ("mesh exceeds the plugin transfer budget").</li>
+<li><b>The mesh has one open seam.</b> <code>Wall-Foot.stl</code>: 3099 vertices, 6138 triangles, no edge on more than two triangles, but 88 open edges (146 mm in all) in a ring at z = -204 to -200 mm, x 179-241, y 92-163: where the cone meets the wall plate. SolidCraft therefore reports the body as not closed. Slicers usually close such a seam; check the slicer preview there.</li>
+</ul>
+<p>The foot needs a 3D check, as the 29 Oct Python voxel model did (<code>tools/foot_fem_heatmap.py</code>). The same Rust solver can do 3D voxels; as a command-line tool it reads the STL directly and has no plugin limits.</p>
+
 <h2>Next</h2>
 <ul>
 <li>Check the library values against the standards and datasheets (research round), add your filaments' datasheet values.</li>
