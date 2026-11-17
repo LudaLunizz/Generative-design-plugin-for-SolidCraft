@@ -362,11 +362,14 @@ pub struct BenchParams {
     pub cg_max: usize,
     pub picture: bool,
     pub solver: String,
+    /// Profiling: run only one part `repeat` times ("apply", "setup", "vcycle") instead of SIMP.
+    pub part: String,
+    pub repeat: usize,
 }
 
 impl Default for BenchParams {
     fn default() -> Self {
-        Self { nx: 60, ny: 30, iterations: 50, load: "cantilever".into(), volfrac: 0.5, rmin: 1.5, cg_tol: 1e-6, cg_max: 20_000, picture: true, solver: "multigrid".into() }
+        Self { nx: 60, ny: 30, iterations: 50, load: "cantilever".into(), volfrac: 0.5, rmin: 1.5, cg_tol: 1e-6, cg_max: 20_000, picture: true, solver: "multigrid".into(), part: String::new(), repeat: 1 }
     }
 }
 
@@ -430,6 +433,12 @@ pub fn bench_report(p: &crate::topo2d::Problem, out: &crate::topo2d::Outcome, pi
 
 fn solver_benchmark<H: Host>(host: &mut H, b: BenchParams) -> Result<Value, Failure<H::Error>> {
     let p = b.problem()?;
+    if !b.part.is_empty() {
+        if !(1..=10_000).contains(&b.repeat) {
+            return Err(Failure::input("repeat", "expected 1 to 10000"));
+        }
+        return crate::topo2d::profile_part(&p, &b.part, b.repeat).map_err(|reason| Failure::input("part", reason));
+    }
     let total = p.max_iterations;
     let out = crate::topo2d::optimise(&p, |it, i| {
         host.progress((it + 1) as f32 / total as f32, &format!("Iteration {} of {total}, compliance {:.3}", it + 1, i.compliance));

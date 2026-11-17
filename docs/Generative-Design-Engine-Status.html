@@ -21,7 +21,7 @@ li { margin-bottom: 2pt; }
 p { margin: 5pt 0; }
 </style></head><body>
 <h1>Generative Design Engine - Status</h1>
-<div class="sub">SolidCraft plugin · version 0.2.1 · 17 Nov 2026 · ~/project SolidCraft/generative-design-engine (local git)</div>
+<div class="sub">SolidCraft plugin · version 0.2.2 · 17 Nov 2026 · ~/project SolidCraft/generative-design-engine (local git)</div>
 
 <div class="box"><b>In short:</b> the 0.1 plugin did not work and its results were made up. It is rebuilt as a real SolidCraft component with an 11-material engineering library (SolidCraft's own material cards) and a per-body material report. It is installed in SolidCraft 0.42 and passes an end-to-end test there. Generative design and stress analysis are withdrawn until a real solver backs them.</div>
 
@@ -81,6 +81,23 @@ p { margin: 5pt 0; }
 <p>Limits: fuel is a setting (Preferences › Plugins, default ceiling 1e11, the plugin asks for 1e11); the 30 s deadline is fixed. Inside SolidCraft runs 4x slower than native. Target after both fixes: 120 x 60 with 100 iterations in a few seconds.</p>
 <p>Scripts: <code>tests/bench-wasm.sh</code> (in SolidCraft + native + fuel bisection), <code>cargo run --release --example bench -- NX NY ITERATIONS [cantilever|mbb]</code>.</p>
 
+<h2>Speed round 1: multigrid and faster loops (17 Nov, v0.2.2)</h2>
+<div class="box"><b>Result:</b> a full 120 x 60 optimisation (100 design iterations) now runs inside SolidCraft in 3.1 s; before it did not fit at all. 60 x 30 takes 0.9 s.</div>
+<table><tr><th>Grid, 100 iterations</th><th>Before (Jacobi)</th><th>Now native</th><th>Now in SolidCraft</th></tr>
+<tr><td>60 x 30</td><td>2.4 s native, ~10 s in SolidCraft</td><td>0.38 s</td><td>0.91 s</td></tr>
+<tr><td>120 x 60</td><td>20 s native, out of fuel</td><td>1.8 s</td><td>3.1 s</td></tr>
+<tr><td>160 x 80</td><td>-</td><td>4.1 s</td><td>out of fuel (1e11)</td></tr>
+<tr><td>240 x 120</td><td>161 s native</td><td>~17 s</td><td>out of fuel</td></tr></table>
+<p>What changed, in order of effect:</p>
+<ul>
+<li><b>Multigrid preconditioner</b> (<code>src/mg2d.rs</code>): solver steps per stress solve fell from 320-1430 to about 10 at any grid size (72 302 to 909 in total at 120 x 60). Coarse grids are the exact Galerkin product, built per coarse cell; a test checks them against the slow global product.</li>
+<li><b>Compiler optimisation for speed</b> instead of size: about 2.5x on everything.</li>
+<li><b>Filter and update:</b> the volume check no longer runs the filter about 40 times per iteration (the filtered volume is a weighted sum); filter weights precomputed. 0.90 s to 0.16 s.</li>
+<li><b>Sparse coarse-grid product</b> (only the non-zero interpolation weights) and a <b>SIMD stiffness product</b> in WebAssembly.</li>
+</ul>
+<p>Fuel per call inside SolidCraft at 120 x 60 (measured by bisection): stiffness product 9.1 M to 2.4 M, V-cycle 82 M to 33 M, multigrid setup 420 M to 117 M. One design iteration is now about 0.44 billion: V-cycles about 70%, setup about 27%.</p>
+<p>Next for larger grids: SIMD and packed matrices on the coarse grids, cheaper restriction and interpolation, building the coarse-grid weights once instead of per cell, a direct diagonal. Expected another 2-3x, enough for 160 x 80 within the default fuel ceiling. Raising the ceiling in Preferences also works, as long as the run stays under 30 s.</p>
+
 <h2>Next</h2>
 <ul>
 <li>Check the library values against the standards and datasheets (research round), add your filaments' datasheet values.</li>
@@ -89,7 +106,7 @@ p { margin: 5pt 0; }
 
 <h2>Paths</h2>
 <pre>Source:     ~/project SolidCraft/generative-design-engine  (git: cb61637)
-Package:    dist/gen-design-engine-0.2.1.zip (+ .sha256)
+Package:    dist/gen-design-engine-0.2.2.zip (+ .sha256)
 Installed:  ~/.local/share/solidcraft/plugins/gen-design-engine
 Old 0.1:    winExtra/0000 Claude deprecated/SolidCraft/.generative-design-engine.bak-before-rewrite</pre>
 </body></html>

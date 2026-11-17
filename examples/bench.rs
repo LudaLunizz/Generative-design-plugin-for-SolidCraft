@@ -16,10 +16,16 @@ fn main() {
         }
     };
     let t = Instant::now();
-    let out = generative_design_engine::topo2d::optimise(&p, |_, _| true);
+    let clock = || t.elapsed().as_secs_f64();
+    let out = generative_design_engine::topo2d::optimise_timed(&p, &clock, |_, _| true);
     let ms = t.elapsed().as_secs_f64() * 1000.0;
     let r = bench_report(&p, &out, true);
     println!("{}x{} {} its {} ({} levels): {:.0} ms native, cg total {}, compliance {} -> {}", p.nx, p.ny, p.max_iterations, r["solver"].as_str().unwrap_or("?"), r["multigrid_levels"], ms, r["cg_iterations_total"], r["compliance_first"], r["compliance_last"]);
+    let ph = out.phases;
+    println!("  phases: setup {:.0} ms, solve {:.0} ms, sensitivities {:.0} ms, filter+update {:.0} ms", ph.setup_s * 1e3, ph.solve_s * 1e3, ph.sensitivity_s * 1e3, ph.update_s * 1e3);
+    if std::env::var_os("NO_PICTURE").is_some() {
+        return;
+    }
     if let Some(rows) = r["picture"].as_array() {
         for row in rows {
             println!("  |{}|", row.as_str().unwrap_or(""));

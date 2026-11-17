@@ -1,6 +1,6 @@
 [package]
 name = "generative-design-engine"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.85"
 description = "SolidCraft plugin: engineering material library, material reports; generative design to follow"
@@ -28,7 +28,7 @@ indexing_slicing = "deny"
 
 [profile.release]
 lto = true
-opt-level = "s"
+opt-level = 3
 codegen-units = 1
 panic = "abort"
 strip = true

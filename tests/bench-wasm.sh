@@ -35,7 +35,9 @@ run() { # approval nx ny iterations [solver]
 echo "== Time: WebAssembly in SolidCraft vs native (fuel 1e11, deadline 30 s)"
 approval=$(package 100000000000)
 printf '%-10s %5s %-9s %10s %10s %7s %8s %s\n' grid its solver wasm_ms native_ms ratio cg_total status
-for case in ${CASES:-"60 30 20 jacobi" "120 60 5 jacobi" "60 30 100 multigrid" "120 60 100 multigrid" "160 80 100 multigrid" "240 120 100 multigrid" "240 120 20 multigrid"}; do
+# CASES: "nx ny iterations solver" entries separated by ";"
+IFS=';' read -ra cases <<< "${CASES:-60 30 20 jacobi;120 60 5 jacobi;60 30 100 multigrid;120 60 100 multigrid;160 80 100 multigrid;240 120 100 multigrid}"
+for case in "${cases[@]}"; do
   set -- $case
   IFS=$'\t' read -r ms status result < <(run "$approval" "$1" "$2" "$3" "$4")
   native=$("$root/target/release/examples/bench" "$1" "$2" "$3" cantilever "$4" | head -n 1 | sed -n 's/.*: \([0-9]*\) ms native.*/\1/p')
@@ -56,3 +58,25 @@ for _ in $(seq 1 14); do
   if [ "$status" = ok ]; then hi=$mid; products=$(echo "$result" | jq '.element_products'); else lo=$mid; fi
 done
 echo "fuel needed: between $lo and $hi; element products: $products; fuel per element product: $(python3 -I -c "print(round($hi/$products))")"
+
+# PARTS=1: fuel of each part on its own (fuel per call = fuel(repeat=R) / R, measured at two
+# repeat counts so the fixed start-up cost drops out).
+if [ "${PARTS:-}" ]; then
+  fuel_of() { # part repeat
+    local lo=100000 hi=100000000000 mid a
+    for _ in $(seq 1 16); do
+      mid=$(python3 -I -c "import math; print(int(math.sqrt($lo*$hi)))")
+      a=$(package "$mid")
+      jq -nc --arg a "$a" --arg part "$1" --argjson r "$2" \
+        '[{command:"plugin.run",params:{path:"gen-design-engine",approval:$a,entry:"solver-benchmark",params:{nx:120,ny:60,part:$part,repeat:$r}}}]' > p.json
+      if solidcraft-cli run p.json --results --json-out p.out --quiet 2>/dev/null; then hi=$mid; else lo=$mid; fi
+    done
+    echo "$hi"
+  }
+  echo "== Fuel per part at 120x60 (one call)"
+  for part in apply vcycle setup filter; do
+    case $part in apply|filter) r1=20; r2=60 ;; vcycle) r1=5; r2=15 ;; setup) r1=2; r2=6 ;; esac
+    f1=$(fuel_of $part $r1); f2=$(fuel_of $part $r2)
+    python3 -I -c "per=($f2-$f1)/($r2-$r1); print(f'{\"$part\":8} {per:14,.0f} fuel per call  ({per/7200:,.0f} per cell)')"
+  done
+fi

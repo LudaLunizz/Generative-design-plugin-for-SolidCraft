@@ -219,32 +219,44 @@ pub struct Analysis {
     pub converged: bool,
     /// Multigrid levels used (1 for Jacobi).
     pub levels: usize,
+    /// Seconds spent building the preconditioner and in CG (0 without a clock).
+    pub setup_s: f64,
+    pub solve_s: f64,
 }
 
 pub fn analyse(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>) -> Analysis {
+    analyse_timed(p, modulus, start, &|| 0.0)
+}
+
+/// [`analyse`] with a clock (seconds) for the setup/solve split.
+pub fn analyse_timed(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>, clock: &dyn Fn() -> f64) -> Analysis {
+    let t0 = clock();
     let (fixed, f) = p.supports_and_load();
     let fine = Level { nx: p.nx, ny: p.ny, cells: Cells::Scaled { ke: Box::new(element_stiffness(p.nu)), modulus: modulus.to_vec() }, fixed };
     let mut u = start.filter(|s| s.len() == f.len()).unwrap_or_else(|| vec![0.0; f.len()]);
-    let (cg_iterations, converged, levels) = match p.solver {
+    let (cg_iterations, converged, levels, t1) = match p.solver {
         Solver::Jacobi => {
             let inv: Vec<f64> = fine.diagonal().iter().map(|d| 1.0 / d).collect();
             let jacobi = |r: &[f64]| r.iter().zip(&inv).map(|(a, d)| a * d).collect();
+            let t1 = clock();
             let (it, ok) = pcg(&fine, &jacobi, &f, &mut u, p.cg_tol, p.cg_max);
-            (it, ok, 1)
+            (it, ok, 1, t1)
         }
         Solver::Multigrid => {
             let h = Hierarchy::new(fine, Settings::default());
+            let t1 = clock();
             match h.fine() {
                 Some(op) => {
                     let (it, ok) = pcg(op, &|r: &[f64]| h.precondition(r), &f, &mut u, p.cg_tol, p.cg_max);
-                    (it, ok, h.depth())
+                    (it, ok, h.depth(), t1)
                 }
-                None => (0, false, 0),
+                None => (0, false, 0, t1),
             }
         }
     };
+    let t2 = clock();
     let compliance = dot(&f, &u);
-    Analysis { u, compliance, cg_iterations, converged, levels }
+    Analysis { u, compliance, cg_iterations, converged, levels, setup_s: t1 - t0, solve_s: t2 - t1 }
 }
 
 pub struct Iteration {
@@ -261,40 +273,60 @@ pub struct Outcome {
     pub history: Vec<Iteration>,
     pub converged: bool,
     pub cancelled: bool,
+    /// Seconds per phase over the whole run: preconditioner setup, CG solve, sensitivities,
+    /// filter + optimality-criteria update (all 0 without a clock).
+    pub phases: Phases,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Phases {
+    pub setup_s: f64,
+    pub solve_s: f64,
+    pub sensitivity_s: f64,
+    pub update_s: f64,
 }
 
 /// Density filter: a cone of radius `rmin` around each cell, applied as `out = H in / Hs`.
 struct Filter {
     nx: usize,
     ny: usize,
-    r: f64,
-    reach: usize,
+    stencil: Vec<(isize, isize, f64)>,
     hs: Vec<f64>,
 }
 
 impl Filter {
     fn new(nx: usize, ny: usize, r: f64) -> Self {
         let reach = (r.ceil() as usize).saturating_sub(1);
-        let mut f = Self { nx, ny, r, reach, hs: Vec::new() };
+        // The cone's weights, once: (dx, dy, w) for every offset with w > 0.
+        let reach_i = reach as isize;
+        let mut stencil = Vec::new();
+        for dx in -reach_i..=reach_i {
+            for dy in -reach_i..=reach_i {
+                let w = r - ((dx * dx + dy * dy) as f64).sqrt();
+                if w > 0.0 {
+                    stencil.push((dx, dy, w));
+                }
+            }
+        }
+        let mut f = Self { nx, ny, stencil, hs: Vec::new() };
         let ones = vec![1.0; nx * ny];
         f.hs = f.weighted(&ones);
         f
     }
     fn weighted(&self, v: &[f64]) -> Vec<f64> {
         let mut out = vec![0.0; self.nx * self.ny];
-        for i in 0..self.nx {
-            for j in 0..self.ny {
+        let (nx, ny) = (self.nx as isize, self.ny as isize);
+        for (i, column) in out.chunks_exact_mut(self.ny.max(1)).enumerate() {
+            for (j, o) in column.iter_mut().enumerate() {
+                let (i, j) = (i as isize, j as isize);
                 let mut s = 0.0;
-                for k in i.saturating_sub(self.reach)..(i + self.reach + 1).min(self.nx) {
-                    for l in j.saturating_sub(self.reach)..(j + self.reach + 1).min(self.ny) {
-                        let d = ((i as f64 - k as f64).powi(2) + (j as f64 - l as f64).powi(2)).sqrt();
-                        let w = (self.r - d).max(0.0);
-                        s += w * v.get(k * self.ny + l).copied().unwrap_or(0.0);
+                for (dx, dy, w) in &self.stencil {
+                    let (k, l) = (i + dx, j + dy);
+                    if k >= 0 && k < nx && l >= 0 && l < ny {
+                        s += w * v.get((k * ny + l) as usize).copied().unwrap_or(0.0);
                     }
                 }
-                if let Some(o) = out.get_mut(i * self.ny + j) {
-                    *o = s;
-                }
+                *o = s;
             }
         }
         out
@@ -312,7 +344,13 @@ impl Filter {
 
 /// Runs SIMP. `step` is called after every iteration (iteration index, compliance) and returns
 /// false to stop (cancel).
-pub fn optimise(p: &Problem, mut step: impl FnMut(usize, &Iteration) -> bool) -> Outcome {
+pub fn optimise(p: &Problem, step: impl FnMut(usize, &Iteration) -> bool) -> Outcome {
+    optimise_timed(p, &|| 0.0, step)
+}
+
+/// [`optimise`] with a clock (seconds) for the phase split in `Outcome::phases`.
+pub fn optimise_timed(p: &Problem, clock: &dyn Fn() -> f64, mut step: impl FnMut(usize, &Iteration) -> bool) -> Outcome {
+    let mut phases = Phases::default();
     const E0: f64 = 1.0;
     const EMIN: f64 = 1e-9;
     let n = p.nx * p.ny;
@@ -327,7 +365,10 @@ pub fn optimise(p: &Problem, mut step: impl FnMut(usize, &Iteration) -> bool) ->
     let dv = filter.backward(&vec![1.0; n]);
     for it in 0..p.max_iterations {
         let modulus: Vec<f64> = phys.iter().map(|d| EMIN + d.powf(p.penal) * (E0 - EMIN)).collect();
-        let a = analyse(p, &modulus, u.take());
+        let a = analyse_timed(p, &modulus, u.take(), clock);
+        phases.setup_s += a.setup_s;
+        phases.solve_s += a.solve_s;
+        let ts = clock();
         // Element strain energy for E = 1, then the compliance sensitivity.
         let mut dc = vec![0.0; n];
         let mut e = 0;
@@ -346,6 +387,8 @@ pub fn optimise(p: &Problem, mut step: impl FnMut(usize, &Iteration) -> bool) ->
                 e += 1;
             }
         }
+        let tu = clock();
+        phases.sensitivity_s += tu - ts;
         let dc = filter.backward(&dc);
         // Optimality criteria with bisection on the volume multiplier.
         let mv = 0.2;
@@ -364,12 +407,15 @@ pub fn optimise(p: &Problem, mut step: impl FnMut(usize, &Iteration) -> bool) ->
                     *slot = if v.is_finite() { v } else { xi };
                 }
             }
-            let vol: f64 = filter.forward(&xnew).iter().sum();
+            // The filtered volume is linear in x: sum_i (H x)_i / Hs_i = x . dv, with dv the
+            // filter's backward image of ones. No filter pass needed per bisection step.
+            let vol = dot(&xnew, &dv);
             if vol > p.volfrac * n as f64 { l1 = lmid } else { l2 = lmid }
         }
         let change = x.iter().zip(&xnew).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
         x = xnew;
         phys = filter.forward(&x);
+        phases.update_s += clock() - tu;
         let iteration = Iteration {
             compliance: a.compliance,
             volume: phys.iter().sum::<f64>() / n as f64,
@@ -390,7 +436,52 @@ pub fn optimise(p: &Problem, mut step: impl FnMut(usize, &Iteration) -> bool) ->
             break;
         }
     }
-    Outcome { density: phys, history, converged, cancelled }
+    Outcome { density: phys, history, converged, cancelled, phases }
+}
+
+/// Profiling aid for the benchmark: runs one part of a design iteration `repeat` times on a
+/// mid-way design (density alternating 1 and 0.2), so its fuel can be measured on its own.
+pub fn profile_part(p: &Problem, part: &str, repeat: usize) -> Result<serde_json::Value, String> {
+    let n = p.nx * p.ny;
+    let modulus: Vec<f64> = (0..n).map(|i| if i % 3 == 0 { 0.2f64.powf(p.penal) } else { 1.0 }).collect();
+    let (fixed, f) = p.supports_and_load();
+    let fine = || Level { nx: p.nx, ny: p.ny, cells: Cells::Scaled { ke: Box::new(element_stiffness(p.nu)), modulus: modulus.clone() }, fixed: fixed.clone() };
+    let mut checksum = 0.0;
+    match part {
+        "apply" => {
+            let level = fine();
+            let mut y = vec![0.0; f.len()];
+            let mut u = f.clone();
+            for _ in 0..repeat {
+                level.apply(&u, &mut y);
+                std::mem::swap(&mut u, &mut y);
+            }
+            checksum = dot(&u, &u);
+        }
+        "setup" => {
+            for _ in 0..repeat {
+                checksum += Hierarchy::new(fine(), Settings::default()).depth() as f64;
+            }
+        }
+        "vcycle" => {
+            let h = Hierarchy::new(fine(), Settings::default());
+            let mut r = f.clone();
+            for _ in 0..repeat {
+                r = h.precondition(&r);
+            }
+            checksum = dot(&r, &r);
+        }
+        "filter" => {
+            let filter = Filter::new(p.nx, p.ny, p.rmin);
+            let mut x = vec![p.volfrac; n];
+            for _ in 0..repeat {
+                x = filter.forward(&x);
+            }
+            checksum = x.iter().sum();
+        }
+        _ => return Err("expected apply, setup, vcycle or filter".into()),
+    }
+    Ok(serde_json::json!({ "part": part, "repeat": repeat, "cells": n, "checksum": checksum }))
 }
 
 /// A small picture of a density field: one character per block of cells, darker = more material.

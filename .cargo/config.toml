@@ -1,0 +1,3 @@
+# WebAssembly SIMD (128-bit): two f64 per operation in the solver's inner loops.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

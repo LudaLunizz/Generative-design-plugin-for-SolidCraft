@@ -53,36 +53,34 @@ impl Level {
         }
     }
 
-    /// y = K u (zero on fixed DOFs).
+    /// y = K u (zero on fixed DOFs). Walks the grid one column of cells at a time, reading the
+    /// two node columns each cell column touches as slices, so the inner loop does no lookups.
     pub fn apply(&self, u: &[f64], y: &mut [f64]) {
         y.iter_mut().for_each(|v| *v = 0.0);
-        let mut e = 0;
+        let col = 2 * (self.ny + 1);
         for ex in 0..self.nx {
-            for ey in 0..self.ny {
-                let dofs = cell_dofs(self.ny, ex, ey);
-                let ue = dofs.map(|d| u.get(d).copied().unwrap_or(0.0));
-                match &self.cells {
-                    Cells::Scaled { ke, modulus } => {
-                        let m = modulus.get(e).copied().unwrap_or(0.0);
-                        for (row, d) in ke.iter().zip(dofs) {
-                            let s: f64 = row.iter().zip(&ue).map(|(a, b)| a * b).sum();
-                            if let Some(out) = y.get_mut(d) {
-                                *out += m * s;
-                            }
-                        }
+            let (left, right) = y.split_at_mut((ex + 1) * col);
+            let (Some(y0), Some(y1), Some(u0), Some(u1)) =
+                (left.get_mut(ex * col..), right.get_mut(..col), u.get(ex * col..(ex + 1) * col), u.get((ex + 1) * col..(ex + 2) * col))
+            else {
+                return;
+            };
+            let cells = ex * self.ny..(ex + 1) * self.ny;
+            match &self.cells {
+                Cells::Scaled { ke, modulus } => {
+                    let Some(m) = modulus.get(cells) else { return };
+                    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+                    {
+                        let packed = simd::pack(ke);
+                        column_product(m.iter().map(|m| (&packed, *m)), simd::cell_product, u0, u1, y0, y1);
                     }
-                    Cells::Full(all) => {
-                        if let Some(k) = all.get(e) {
-                            for (row, d) in k.iter().zip(dofs) {
-                                let s: f64 = row.iter().zip(&ue).map(|(a, b)| a * b).sum();
-                                if let Some(out) = y.get_mut(d) {
-                                    *out += s;
-                                }
-                            }
-                        }
-                    }
+                    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+                    column_product(m.iter().map(|m| (&**ke, *m)), cell_product, u0, u1, y0, y1);
                 }
-                e += 1;
+                Cells::Full(all) => {
+                    let Some(k) = all.get(cells) else { return };
+                    column_product(k.iter().map(|k| (k, 1.0)), cell_product, u0, u1, y0, y1);
+                }
             }
         }
         for (out, fixed) in y.iter_mut().zip(&self.fixed) {
@@ -116,7 +114,7 @@ impl Level {
     }
 
     /// The next coarser level, or None when this grid cannot be halved.
-    fn coarsen(&self) -> Option<Level> {
+    pub fn coarsen(&self) -> Option<Level> {
         if self.nx % 2 != 0 || self.ny % 2 != 0 || self.nx < 4 || self.ny < 4 {
             return None;
         }
@@ -135,78 +133,58 @@ impl Level {
                 }
             }
         }
-        // Interpolation from the 4 coarse corners to the 3x3 fine nodes of one coarse cell, in
-        // corner order (0,0), (2,0), (2,2), (0,2) and fine-node order p * 3 + q.
+        // Per coarse cell: kc = sum over its 4 fine cells of P_f^T K_f P_f, with P_f the 8 x 8
+        // interpolation from the coarse cell's DOFs to that fine cell's DOFs. Each fine node takes
+        // its value from 1, 2 or 4 coarse corners, so P_f has at most 18 non-zeros; rows of fixed
+        // fine DOFs and columns of fixed coarse DOFs are left out, which drops the supports.
+        // Coarse corner order matches cell_dofs: (0,0), (2,0), (2,2), (0,2) in fine-node units.
         let corners = [(0usize, 0usize), (2, 0), (2, 2), (0, 2)];
-        let mut weight = [[0.0f64; 4]; 9];
-        for p in 0..3 {
-            for q in 0..3 {
-                for (k, (px, qy)) in corners.iter().enumerate() {
-                    let wx = 1.0 - (p as f64 - *px as f64).abs() / 2.0;
-                    let wy = 1.0 - (q as f64 - *qy as f64).abs() / 2.0;
-                    if let Some(w) = weight.get_mut(p * 3 + q).and_then(|r| r.get_mut(k)) {
-                        *w = wx.max(0.0) * wy.max(0.0);
-                    }
-                }
-            }
-        }
         let mut cells = Vec::with_capacity(cx * cy);
+        let mut entries: Vec<(usize, usize, f64)> = Vec::with_capacity(18);
         for ex in 0..cx {
             for ey in 0..cy {
-                // Patch stiffness on the 3x3 fine nodes (18 DOFs), fixed fine DOFs left out.
-                let mut patch = [[0.0f64; 18]; 18];
+                let coarse = cell_dofs(cy, ex, ey);
+                let mut kc = [[0.0f64; 8]; 8];
                 for a in 0..2 {
                     for b in 0..2 {
                         let (fx, fy) = (2 * ex + a, 2 * ey + b);
                         let k = self.cell_matrix(fx * self.ny + fy);
-                        let global = cell_dofs(self.ny, fx, fy);
-                        // Local node of each of the cell's 4 nodes in the 3x3 patch.
-                        let local_nodes = [(a, b), (a + 1, b), (a + 1, b + 1), (a, b + 1)];
-                        let local: [usize; 8] = std::array::from_fn(|i| {
-                            let (p, q) = local_nodes.get(i / 2).copied().unwrap_or((0, 0));
-                            2 * (p * 3 + q) + i % 2
-                        });
-                        for (i, (li, gi)) in local.iter().zip(global).enumerate() {
-                            if self.fixed.get(gi).copied().unwrap_or(true) {
-                                continue;
-                            }
-                            for (j, (lj, gj)) in local.iter().zip(global).enumerate() {
-                                if self.fixed.get(gj).copied().unwrap_or(true) {
+                        let fine = cell_dofs(self.ny, fx, fy);
+                        // The fine cell's nodes in the coarse cell's 3x3 node patch.
+                        let nodes = [(a, b), (a + 1, b), (a + 1, b + 1), (a, b + 1)];
+                        entries.clear();
+                        for (node, (p, q)) in nodes.iter().enumerate() {
+                            for (corner, (px, qy)) in corners.iter().enumerate() {
+                                let w = (1.0 - (*p as f64 - *px as f64).abs() / 2.0).max(0.0) * (1.0 - (*q as f64 - *qy as f64).abs() / 2.0).max(0.0);
+                                if w == 0.0 {
                                     continue;
                                 }
-                                let v = k.get(i).and_then(|r| r.get(j)).copied().unwrap_or(0.0);
-                                if let Some(slot) = patch.get_mut(*li).and_then(|r| r.get_mut(*lj)) {
-                                    *slot += v;
+                                for c in 0..2 {
+                                    let (fi, ci) = (2 * node + c, 2 * corner + c);
+                                    let fine_fixed = fine.get(fi).is_none_or(|d| self.fixed.get(*d).copied().unwrap_or(true));
+                                    let coarse_fixed = coarse.get(ci).is_none_or(|d| fixed.get(*d).copied().unwrap_or(true));
+                                    if !fine_fixed && !coarse_fixed {
+                                        entries.push((fi, ci, w));
+                                    }
                                 }
                             }
                         }
-                    }
-                }
-                // P_e: 18 x 8, with columns of fixed coarse DOFs zero.
-                let coarse = cell_dofs(cy, ex, ey);
-                let mut pe = [[0.0f64; 8]; 18];
-                for (node, wrow) in weight.iter().enumerate() {
-                    for (k, w) in wrow.iter().enumerate() {
-                        for c in 0..2 {
-                            let col = 2 * k + c;
-                            let free = coarse.get(col).is_some_and(|d| !fixed.get(*d).copied().unwrap_or(true));
-                            if free && let Some(slot) = pe.get_mut(2 * node + c).and_then(|r| r.get_mut(col)) {
-                                *slot = *w;
+                        // kp = K_f P_f (8 x 8), then kc += P_f^T kp.
+                        let mut kp = [[0.0f64; 8]; 8];
+                        for &(fi, ci, w) in &entries {
+                            for (kprow, krow) in kp.iter_mut().zip(&k) {
+                                if let (Some(out), Some(kv)) = (kprow.get_mut(ci), krow.get(fi)) {
+                                    *out += kv * w;
+                                }
                             }
                         }
-                    }
-                }
-                // P_e^T patch P_e.
-                let mut kp = [[0.0f64; 8]; 18];
-                for (row, prow) in kp.iter_mut().zip(&patch) {
-                    for (j, out) in row.iter_mut().enumerate() {
-                        *out = prow.iter().zip(&pe).map(|(a, prow2)| a * prow2.get(j).copied().unwrap_or(0.0)).sum();
-                    }
-                }
-                let mut kc = [[0.0f64; 8]; 8];
-                for (i, row) in kc.iter_mut().enumerate() {
-                    for (j, out) in row.iter_mut().enumerate() {
-                        *out = pe.iter().zip(&kp).map(|(prow, krow)| prow.get(i).copied().unwrap_or(0.0) * krow.get(j).copied().unwrap_or(0.0)).sum();
+                        for &(fi, ci, w) in &entries {
+                            if let (Some(kcrow), Some(kprow)) = (kc.get_mut(ci), kp.get(fi)) {
+                                for (out, v) in kcrow.iter_mut().zip(kprow) {
+                                    *out += w * v;
+                                }
+                            }
+                        }
                     }
                 }
                 cells.push(kc);
@@ -270,6 +248,96 @@ impl Level {
     }
 }
 
+/// m * K u for one cell. K is symmetric, so K u = sum_j u_j * (row j): eight independent running
+/// sums instead of eight dependent dot-product chains.
+#[inline]
+fn cell_product(k: &Mat8, ue: [f64; 8], m: f64) -> [f64; 8] {
+    let mut ye = [0.0f64; 8];
+    for (row, v) in k.iter().zip(ue) {
+        for (y, kv) in ye.iter_mut().zip(row) {
+            *y += kv * v;
+        }
+    }
+    ye.map(|v| v * m)
+}
+
+/// The same product with WebAssembly SIMD: two f64 per operation. The fuel SolidCraft meters
+/// counts operations, so this roughly halves the cost of the hottest loop.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod simd {
+    use core::arch::wasm32::{f64x2, f64x2_add, f64x2_extract_lane, f64x2_mul, f64x2_splat, v128};
+
+    pub type Packed = [[v128; 4]; 8];
+
+    pub fn pack(k: &super::Mat8) -> Packed {
+        k.map(|[a, b, c, d, e, f, g, h]| [f64x2(a, b), f64x2(c, d), f64x2(e, f), f64x2(g, h)])
+    }
+
+    #[inline]
+    pub fn cell_product(k: &Packed, ue: [f64; 8], m: f64) -> [f64; 8] {
+        let mut acc = [f64x2_splat(0.0); 4];
+        for (row, v) in k.iter().zip(ue) {
+            let s = f64x2_splat(v * m);
+            for (a, kv) in acc.iter_mut().zip(row) {
+                *a = f64x2_add(*a, f64x2_mul(*kv, s));
+            }
+        }
+        let [a, b, c, d] = acc;
+        [
+            f64x2_extract_lane::<0>(a),
+            f64x2_extract_lane::<1>(a),
+            f64x2_extract_lane::<0>(b),
+            f64x2_extract_lane::<1>(b),
+            f64x2_extract_lane::<0>(c),
+            f64x2_extract_lane::<1>(c),
+            f64x2_extract_lane::<0>(d),
+            f64x2_extract_lane::<1>(d),
+        ]
+    }
+}
+
+/// y += K u for one column of cells: `u0`/`y0` are the left node column, `u1`/`y1` the right one
+/// (x, y per node, bottom to top). Cell `ey` couples nodes ey and ey+1 of both columns; the
+/// upper node's share is carried to the next cell so every output is written once, in order.
+#[inline]
+fn column_product<'a, T: 'a>(
+    cells: impl Iterator<Item = (&'a T, f64)>,
+    product: impl Fn(&T, [f64; 8], f64) -> [f64; 8],
+    u0: &[f64],
+    u1: &[f64],
+    y0: &mut [f64],
+    y1: &mut [f64],
+) {
+    let mut out0 = y0.chunks_exact_mut(2);
+    let mut out1 = y1.chunks_exact_mut(2);
+    let mut carry0 = [0.0f64; 2];
+    let mut carry1 = [0.0f64; 2];
+    for ((w0, w1), (k, m)) in u0.windows(4).step_by(2).zip(u1.windows(4).step_by(2)).zip(cells) {
+        let (Ok([a0, a1, a2, a3]), Ok([b0, b1, b2, b3])) = (<[f64; 4]>::try_from(w0), <[f64; 4]>::try_from(w1)) else { break };
+        // Cell DOF order: n0 = left lower, n1 = right lower, n2 = right upper, n3 = left upper.
+        let ue = [a0, a1, b0, b1, b2, b3, a2, a3];
+        let [e0, e1, e2, e3, e4, e5, e6, e7] = product(k, ue, m);
+        if let Some([p, q]) = out0.next() {
+            *p += e0 + carry0[0];
+            *q += e1 + carry0[1];
+        }
+        if let Some([p, q]) = out1.next() {
+            *p += e2 + carry1[0];
+            *q += e3 + carry1[1];
+        }
+        carry0 = [e6, e7];
+        carry1 = [e4, e5];
+    }
+    if let Some([p, q]) = out0.next() {
+        *p += carry0[0];
+        *q += carry0[1];
+    }
+    if let Some([p, q]) = out1.next() {
+        *p += carry1[0];
+        *q += carry1[1];
+    }
+}
+
 /// The coarse nodes (index, weight) a fine node index interpolates from.
 fn parents(i: usize) -> impl Iterator<Item = (usize, f64)> {
     let (a, b) = if i % 2 == 0 { ((i / 2, 1.0), None) } else { ((i / 2, 0.5), Some((i / 2 + 1, 0.5))) };
@@ -277,14 +345,14 @@ fn parents(i: usize) -> impl Iterator<Item = (usize, f64)> {
 }
 
 /// A banded Cholesky factor of a level's assembled matrix (fixed DOFs as identity rows).
-struct Banded {
+pub struct Banded {
     n: usize,
     b: usize,
     l: Vec<f64>, // row i, offset k = i - j, at i * (b + 1) + k
 }
 
 impl Banded {
-    fn factor(level: &Level) -> Banded {
+    pub fn factor(level: &Level) -> Banded {
         let n = level.ndof();
         let b = 2 * (level.ny + 1) + 3;
         let mut a = vec![0.0; n * (b + 1)];

@@ -1,7 +1,7 @@
 {
   "id": "gen-design-engine",
   "name": "Generative Design Engine",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Engineering material library with sourced cards (density, stiffness, strength), applied to bodies, plus a mass and allowable-stress report. Generative design comes in a later version.",
   "capabilities": [
     "commands@0.1"
