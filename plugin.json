@@ -1,7 +1,7 @@
 {
   "id": "gen-design-engine",
   "name": "Generative Design Engine",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Engineering material library (sourced cards), material report, and a 2D stress check of flat parts with safety factor. Generative design comes in a later version.",
   "capabilities": [
     "commands@0.1"
@@ -294,7 +294,7 @@
             "resolution": {
               "type": "integer",
               "title": "Cells along the longer side",
-              "default": 120,
+              "default": 240,
               "minimum": 10,
               "maximum": 400
             },

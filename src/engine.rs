@@ -501,7 +501,7 @@ impl Default for StressParams {
             safety_factor: 2.0,
             material: "body".into(),
             plane: "auto".into(),
-            resolution: 120,
+            resolution: 240,
             picture: true,
         }
     }
@@ -696,7 +696,7 @@ fn stress_check<H: Host>(host: &mut H, library: &Library, p: StressParams) -> Re
         "solver": { "cg_iterations": out.cg_iterations, "converged": out.converged },
         "warnings": out.warnings,
         "picture": if p.picture { json!(out.picture) } else { Value::Null },
-        "method": "2D plane stress on a grid through the part's plane: linear elastic, small deflections, rigid supports, the load spread evenly over the load face. A design check, not a certified analysis.",
+        "method": "2D plane stress on a grid through the part's plane: linear elastic, small deflections, rigid supports, the load spread evenly over the load face. The peak is read at the surface of the part (a plane fitted to the stress of the cells next to an edge, evaluated on the edge), so it does not depend on where a round edge falls on the grid. A design check, not a certified analysis.",
     }))
 }
 
