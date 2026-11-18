@@ -69,6 +69,9 @@ pub enum LoadCase {
     /// Half of a simply supported beam (MBB): left edge symmetric (x fixed), bottom-right corner
     /// on a roller (y fixed), unit load down at the top-left corner.
     Mbb,
+    /// A cantilever for a long beam: left edge fixed, unit load straight down, spread evenly over
+    /// the top-edge nodes of the last `pad` cells (a mass standing on the beam's free end).
+    TipPad(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +88,21 @@ pub struct Problem {
     pub cg_tol: f64,
     pub cg_max: usize,
     pub solver: Solver,
+    /// Heaviside projection sharpness reached by the end (0 = off, plain SIMP with a density
+    /// filter). With it on, beta starts at 1 and doubles every `beta_every` iterations, which keeps
+    /// every member at least about the filter radius wide and the design black and white.
+    pub beta_final: f64,
+    pub beta_every: usize,
+    /// Rows of cells still open at the right-hand end: the design area tapers in a straight line
+    /// from `ny` rows at x = 0 to `tip_rows` at the far end; cells above it are void. 0 = no taper.
+    pub tip_rows: usize,
+    /// Multigrid: coarsen until the banded direct solve of the coarsest grid costs at most this
+    /// many multiply-adds (0 = the default, 2 million). A slender grid that cannot halve any
+    /// further needs a larger budget, or its coarsest level is only smoothed.
+    pub coarse_budget: usize,
+    /// Rows of solid cells kept under the load pad (0 = 2). Must be at least as thick as the
+    /// thinnest member the cleanup keeps, or the cleanup deletes the pad.
+    pub pad_rows: usize,
 }
 
 pub const MAX_ELEMENTS: usize = 250_000;
@@ -106,10 +124,44 @@ impl Problem {
         range(self.nu, 0.0, 0.49, "nu")?;
         range(self.change_tol, 0.0, 1.0, "change_tol")?;
         range(self.cg_tol, 1e-12, 1e-1, "cg_tol")?;
+        range(self.beta_final, 0.0, 64.0, "beta_final")?;
+        if self.tip_rows > self.ny {
+            return Err("tip_rows: at most ny".into());
+        }
+        if self.beta_every == 0 {
+            return Err("beta_every: expected at least 1".into());
+        }
         if !(1..=1000).contains(&self.max_iterations) || !(1..=100_000).contains(&self.cg_max) {
             return Err("max_iterations 1-1000, cg_max 1-100000".into());
         }
         Ok(())
+    }
+
+    /// The design rows open in column `i` (all of `ny` without a taper).
+    pub fn active_rows(&self, i: usize) -> usize {
+        if self.tip_rows == 0 || self.tip_rows >= self.ny {
+            return self.ny;
+        }
+        let rows = self.ny as f64 + (self.tip_rows as f64 - self.ny as f64) * (i as f64 + 0.5) / self.nx as f64;
+        (rows.round() as usize).clamp(1, self.ny)
+    }
+
+    /// Cells above the tapered design area: void, not design variables.
+    pub fn void_cells(&self) -> Vec<usize> {
+        (0..self.nx).flat_map(|i| (self.active_rows(i)..self.ny).map(move |j| i * self.ny + j)).collect()
+    }
+
+    /// Cells the optimiser must keep solid: under the load pad (top two rows), where the weight
+    /// bears on the part.
+    pub fn passive_cells(&self) -> Vec<usize> {
+        match self.load {
+            LoadCase::TipPad(pad) => {
+                let pad = pad.clamp(1, self.nx);
+                let top = self.active_rows(self.nx - 1);
+                (self.nx - pad..self.nx).flat_map(|i| (top.saturating_sub(self.pad_rows.max(2))..top).map(move |j| i * self.ny + j)).collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn nodes_y(&self) -> usize {
@@ -121,8 +173,8 @@ impl Problem {
     fn element_dofs(&self, ex: usize, ey: usize) -> [usize; 8] {
         cell_dofs(self.ny, ex, ey)
     }
-    /// Fixed DOFs as a mask, and the load vector.
-    fn supports_and_load(&self) -> (Vec<bool>, Vec<f64>) {
+    /// Fixed DOFs as a mask, and the (unit) load vector.
+    pub fn supports_and_load(&self) -> (Vec<bool>, Vec<f64>) {
         let n = self.nodes_y();
         let mut fixed = vec![false; self.ndof()];
         let mut f = vec![0.0; self.ndof()];
@@ -139,6 +191,20 @@ impl Problem {
                 }
                 if let Some(v) = f.get_mut(2 * (self.nx * n + self.ny / 2) + 1) {
                     *v = -1.0;
+                }
+            }
+            LoadCase::TipPad(pad) => {
+                for j in 0..n {
+                    set(&mut fixed, 2 * j);
+                    set(&mut fixed, 2 * j + 1);
+                }
+                let pad = pad.clamp(1, self.nx);
+                let share = -1.0 / (pad + 1) as f64;
+                let top = self.active_rows(self.nx - 1);
+                for i in (self.nx - pad)..=self.nx {
+                    if let Some(v) = f.get_mut(2 * (i * n + top) + 1) {
+                        *v = share;
+                    }
                 }
             }
             LoadCase::Mbb => {
@@ -162,6 +228,9 @@ pub enum Solver {
     Jacobi,
     /// One geometric multigrid V-cycle per step: a few dozen steps at any grid size.
     Multigrid,
+    /// The same multigrid with its V-cycle on the GPU (native builds with the `gpu` feature).
+    /// Without the feature, or when no suitable GPU opens, it runs as `Multigrid` on the CPU.
+    Gpu,
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -231,7 +300,7 @@ pub fn analyse(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>) -> Analysi
 /// [`analyse`] with a clock (seconds) for the setup/solve split.
 pub fn analyse_timed(p: &Problem, modulus: &[f64], start: Option<Vec<f64>>, clock: &dyn Fn() -> f64) -> Analysis {
     let (fixed, f) = p.supports_and_load();
-    let system = System { nx: p.nx, ny: p.ny, nu: p.nu, modulus, fixed, load: &f, solver: p.solver, cg_tol: p.cg_tol, cg_max: p.cg_max };
+    let system = System { nx: p.nx, ny: p.ny, nu: p.nu, modulus, fixed, load: &f, solver: p.solver, cg_tol: p.cg_tol, cg_max: p.cg_max, coarse_budget: p.coarse_budget };
     solve(&system, start, clock)
 }
 
@@ -247,6 +316,8 @@ pub struct System<'a> {
     pub solver: Solver,
     pub cg_tol: f64,
     pub cg_max: usize,
+    /// As `Problem::coarse_budget`.
+    pub coarse_budget: usize,
 }
 
 /// Solves K u = f for `system`, warm-started from `start` when it fits.
@@ -254,6 +325,15 @@ pub fn solve(s: &System, start: Option<Vec<f64>>, clock: &dyn Fn() -> f64) -> An
     let t0 = clock();
     let f = s.load;
     let p = s;
+    let settings = Settings { coarse_budget: if s.coarse_budget > 0 { s.coarse_budget } else { Settings::default().coarse_budget }, ..Settings::default() };
+    #[cfg(feature = "gpu")]
+    if p.solver == Solver::Gpu
+        && let Some(g) = crate::gpu::solve_shared(s.nx, s.ny, s.nu, s.modulus, &s.fixed, f, start.as_deref(), settings, s.cg_tol, s.cg_max)
+    {
+        let t2 = clock();
+        let compliance = dot(f, &g.u);
+        return Analysis { u: g.u, compliance, cg_iterations: g.iterations, converged: g.converged, levels: g.levels, setup_s: 0.0, solve_s: t2 - t0 };
+    }
     let fine = Level { nx: s.nx, ny: s.ny, cells: Cells::Scaled { ke: Box::new(element_stiffness(s.nu)), modulus: s.modulus.to_vec() }, fixed: s.fixed.clone() };
     let mut u = start.filter(|v| v.len() == f.len()).unwrap_or_else(|| vec![0.0; f.len()]);
     let (cg_iterations, converged, levels, t1) = match p.solver {
@@ -264,8 +344,8 @@ pub fn solve(s: &System, start: Option<Vec<f64>>, clock: &dyn Fn() -> f64) -> An
             let (it, ok) = pcg(&fine, &jacobi, f, &mut u, p.cg_tol, p.cg_max);
             (it, ok, 1, t1)
         }
-        Solver::Multigrid => {
-            let h = Hierarchy::new(fine, Settings::default());
+        Solver::Multigrid | Solver::Gpu => {
+            let h = Hierarchy::new(fine, settings);
             let t1 = clock();
             match h.fine() {
                 Some(op) => {
@@ -313,6 +393,9 @@ struct Filter {
     nx: usize,
     ny: usize,
     stencil: Vec<(isize, isize, f64)>,
+    /// The stencil as (flat index offset, weight) for cells at least `reach` from every edge.
+    flat: Vec<(isize, f64)>,
+    reach: usize,
     hs: Vec<f64>,
 }
 
@@ -330,7 +413,8 @@ impl Filter {
                 }
             }
         }
-        let mut f = Self { nx, ny, stencil, hs: Vec::new() };
+        let flat = stencil.iter().map(|&(dx, dy, w)| (dx * ny as isize + dy, w)).collect();
+        let mut f = Self { nx, ny, stencil, flat, reach, hs: Vec::new() };
         let ones = vec![1.0; nx * ny];
         f.hs = f.weighted(&ones);
         f
@@ -338,8 +422,15 @@ impl Filter {
     fn weighted(&self, v: &[f64]) -> Vec<f64> {
         let mut out = vec![0.0; self.nx * self.ny];
         let (nx, ny) = (self.nx as isize, self.ny as isize);
+        let r = self.reach;
         for (i, column) in out.chunks_exact_mut(self.ny.max(1)).enumerate() {
             for (j, o) in column.iter_mut().enumerate() {
+                // Interior: every stencil cell exists, so no edge tests (most of the grid).
+                if i >= r && i + r < self.nx && j >= r && j + r < self.ny {
+                    let base = (i * self.ny + j) as isize;
+                    *o = self.flat.iter().map(|&(off, w)| w * v.get((base + off) as usize).copied().unwrap_or(0.0)).sum();
+                    continue;
+                }
                 let (i, j) = (i as isize, j as isize);
                 let mut s = 0.0;
                 for (dx, dy, w) in &self.stencil {
@@ -378,15 +469,89 @@ pub fn optimise_timed(p: &Problem, clock: &dyn Fn() -> f64, mut step: impl FnMut
     let n = p.nx * p.ny;
     let ke = element_stiffness(p.nu);
     let filter = Filter::new(p.nx, p.ny, p.rmin);
+    let passive = p.passive_cells();
+    let void = p.void_cells();
+    let n_active = n - void.len();
+    let general = !void.is_empty(); // volume and sensitivities by the general path, not the linear shortcut
     let mut x = vec![p.volfrac; n];
+    for &i in &void {
+        if let Some(v) = x.get_mut(i) {
+            *v = 0.0;
+        }
+    }
+    for &i in &passive {
+        if let Some(v) = x.get_mut(i) {
+            *v = 1.0;
+        }
+    }
     let mut phys = filter.forward(&x);
     let mut u: Option<Vec<f64>> = None;
     let mut history = Vec::new();
     let mut converged = false;
     let mut cancelled = false;
     let dv = filter.backward(&vec![1.0; n]);
+    // With void or passive cells the filtered volume of the free cells is still linear in x
+    // while there is no projection: sum over free cells of (H x)_i / Hs_i plus the passive count.
+    let mut free = vec![1.0; n];
+    for &i in void.iter().chain(&passive) {
+        if let Some(v) = free.get_mut(i) {
+            *v = 0.0;
+        }
+    }
+    let dv_free = if general { filter.backward(&free) } else { Vec::new() };
+    let n_passive = passive.len() as f64;
+    // The volume multiplier of the last iteration: the next bisection starts around it.
+    let mut lam_prev: Option<f64> = None;
+    let project = |v: f64, beta: f64| -> (f64, f64) {
+        // Smoothed Heaviside about 0.5: value and slope.
+        let eta = 0.5;
+        let norm = (beta * eta).tanh() + (beta * (1.0 - eta)).tanh();
+        let th = (beta * (v - eta)).tanh();
+        (((beta * eta).tanh() + th) / norm, beta * (1.0 - th * th) / norm)
+    };
+    let mut beta = 0.0;
+    let mut rho: Vec<f64>;
     for it in 0..p.max_iterations {
-        let modulus: Vec<f64> = phys.iter().map(|d| EMIN + d.powf(p.penal) * (E0 - EMIN)).collect();
+        // With projection on: the penalty ramps 1 -> p.penal over the first third of the iterations (at most 100)
+        // (a convex start that connects a slender design end to end), then beta doubles.
+        let penal_ramp = (p.max_iterations / 3).clamp(10, 100);
+        let penal = if p.beta_final > 0.0 { (1.0 + (p.penal - 1.0) * it as f64 / penal_ramp as f64).min(p.penal) } else { p.penal };
+        beta = if p.beta_final > 0.0 && it >= penal_ramp { (2f64.powi(((it - penal_ramp) / p.beta_every) as i32)).min(p.beta_final) } else { 0.0 };
+        let (mut drho, dv_it): (Vec<f64>, Vec<f64>);
+        let sharp = beta > 0.0 || general;
+        if beta > 0.0 {
+            let pr: Vec<(f64, f64)> = phys.iter().map(|v| project(*v, beta)).collect();
+            rho = pr.iter().map(|a| a.0).collect();
+            drho = pr.iter().map(|a| a.1).collect();
+        } else {
+            rho = phys.clone();
+            drho = vec![1.0; n];
+        }
+        for &i in &void {
+            if let Some(v) = rho.get_mut(i) {
+                *v = 0.0;
+            }
+            if let Some(v) = drho.get_mut(i) {
+                *v = 0.0;
+            }
+        }
+        for &i in &passive {
+            if let Some(v) = rho.get_mut(i) {
+                *v = 1.0;
+            }
+            if let Some(v) = drho.get_mut(i) {
+                *v = 0.0;
+            }
+        }
+        dv_it = if sharp { filter.backward(&drho) } else { Vec::new() };
+        let mut modulus: Vec<f64> = rho.iter().map(|d| EMIN + d.powf(penal) * (E0 - EMIN)).collect();
+        // A large void area at 1e-9 makes the solve very ill-conditioned (minutes per design);
+        // a stiffer void, still a million times softer than the part, solves in a few steps.
+        for &i in &void {
+            if let Some(m) = modulus.get_mut(i) {
+                *m = 1e-6;
+            }
+        }
         let a = analyse_timed(p, &modulus, u.take(), clock);
         phases.setup_s += a.setup_s;
         phases.solve_s += a.solve_s;
@@ -402,9 +567,9 @@ pub fn optimise_timed(p: &Problem, clock: &dyn Fn() -> f64, mut step: impl FnMut
                 for (row, ui) in ke.iter().zip(&ue) {
                     ce += ui * row.iter().zip(&ue).map(|(k, uj)| k * uj).sum::<f64>();
                 }
-                let d = phys.get(e).copied().unwrap_or(0.0);
+                let d = rho.get(e).copied().unwrap_or(0.0);
                 if let Some(slot) = dc.get_mut(e) {
-                    *slot = -p.penal * d.powf(p.penal - 1.0) * (E0 - EMIN) * ce;
+                    *slot = -penal * d.powf(penal - 1.0) * (E0 - EMIN) * ce * drho.get(e).copied().unwrap_or(1.0);
                 }
                 e += 1;
             }
@@ -414,33 +579,93 @@ pub fn optimise_timed(p: &Problem, clock: &dyn Fn() -> f64, mut step: impl FnMut
         let dc = filter.backward(&dc);
         // Optimality criteria with bisection on the volume multiplier.
         let mv = 0.2;
-        let (mut l1, mut l2) = (0.0_f64, 1e9_f64);
-        let mut xnew = x.clone();
-        for _ in 0..200 {
-            if (l2 - l1) / (l1 + l2).max(f64::MIN_POSITIVE) <= 1e-4 {
-                break;
-            }
-            let lmid = 0.5 * (l1 + l2);
+        let target = p.volfrac * n_active as f64;
+        // The design for multiplier `lmid` written to `xnew`, and its volume.
+        let design_at = |lmid: f64, xnew: &mut Vec<f64>| -> f64 {
             for i in 0..n {
                 let xi = x.get(i).copied().unwrap_or(0.0);
-                let ratio = (-dc.get(i).copied().unwrap_or(0.0) / (dv.get(i).copied().unwrap_or(1.0) * lmid)).max(0.0);
+                let dvi = if sharp { dv_it.get(i).copied().unwrap_or(1.0) } else { dv.get(i).copied().unwrap_or(1.0) };
+                let ratio = (-dc.get(i).copied().unwrap_or(0.0) / (dvi.max(1e-12) * lmid)).max(0.0);
                 let v = (xi * ratio.sqrt()).clamp((xi - mv).max(0.0), (xi + mv).min(1.0));
                 if let Some(slot) = xnew.get_mut(i) {
                     *slot = if v.is_finite() { v } else { xi };
                 }
             }
-            // The filtered volume is linear in x: sum_i (H x)_i / Hs_i = x . dv, with dv the
-            // filter's backward image of ones. No filter pass needed per bisection step.
-            let vol = dot(&xnew, &dv);
-            if vol > p.volfrac * n as f64 { l1 = lmid } else { l2 = lmid }
+            for &i in &void {
+                if let Some(slot) = xnew.get_mut(i) {
+                    *slot = 0.0;
+                }
+            }
+            for &i in &passive {
+                if let Some(slot) = xnew.get_mut(i) {
+                    *slot = 1.0;
+                }
+            }
+            if beta > 0.0 {
+                // Projected: not linear in x, one filter pass per trial.
+                let mut f = filter.forward(xnew);
+                for v in f.iter_mut() {
+                    *v = project(*v, beta).0;
+                }
+                for &i in &void {
+                    if let Some(v) = f.get_mut(i) {
+                        *v = 0.0;
+                    }
+                }
+                for &i in &passive {
+                    if let Some(v) = f.get_mut(i) {
+                        *v = 1.0;
+                    }
+                }
+                f.iter().sum::<f64>()
+            } else if general {
+                // Linear: the free cells' filtered volume is x . dv_free.
+                dot(xnew, &dv_free) + n_passive
+            } else {
+                // The filtered volume is linear in x: sum_i (H x)_i / Hs_i = x . dv, with dv the
+                // filter's backward image of ones. No filter pass needed per bisection step.
+                dot(xnew, &dv)
+            }
+        };
+        let mut xnew = x.clone();
+        // Bracket: around last iteration's multiplier when there is one (it moves little), widened
+        // until the volume crosses the target; else the full range.
+        let (mut l1, mut l2) = match lam_prev {
+            Some(l) if l.is_finite() && l > 0.0 => (l / 2.0, l * 2.0),
+            _ => (0.0, 1e9),
+        };
+        if l1 > 0.0 {
+            let mut k = 0;
+            while design_at(l1, &mut xnew) <= target && k < 20 {
+                l1 /= 4.0;
+                k += 1;
+            }
+            if k == 20 {
+                l1 = 0.0;
+            }
+            let mut k = 0;
+            while design_at(l2, &mut xnew) > target && k < 20 {
+                l2 *= 4.0;
+                k += 1;
+            }
         }
+        for _ in 0..200 {
+            if (l2 - l1) / (l1 + l2).max(f64::MIN_POSITIVE) <= 1e-4 {
+                break;
+            }
+            let lmid = 0.5 * (l1 + l2);
+            if design_at(lmid, &mut xnew) > target { l1 = lmid } else { l2 = lmid }
+        }
+        let lam = 0.5 * (l1 + l2);
+        design_at(lam, &mut xnew);
+        lam_prev = Some(lam);
         let change = x.iter().zip(&xnew).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
         x = xnew;
         phys = filter.forward(&x);
         phases.update_s += clock() - tu;
         let iteration = Iteration {
             compliance: a.compliance,
-            volume: phys.iter().sum::<f64>() / n as f64,
+            volume: if beta > 0.0 { phys.iter().map(|v| project(*v, beta).0).sum::<f64>() } else { phys.iter().sum::<f64>() } / n_active as f64,
             change,
             cg_iterations: a.cg_iterations,
             cg_converged: a.converged,
@@ -449,7 +674,7 @@ pub fn optimise_timed(p: &Problem, clock: &dyn Fn() -> f64, mut step: impl FnMut
         u = Some(a.u);
         let go_on = step(it, &iteration);
         history.push(iteration);
-        if change < p.change_tol {
+        if change < p.change_tol && (p.beta_final == 0.0 || beta >= p.beta_final) {
             converged = true;
             break;
         }
@@ -458,7 +683,18 @@ pub fn optimise_timed(p: &Problem, clock: &dyn Fn() -> f64, mut step: impl FnMut
             break;
         }
     }
-    Outcome { density: phys, history, converged, cancelled, phases }
+    let mut density: Vec<f64> = if beta > 0.0 { phys.iter().map(|v| project(*v, beta).0).collect() } else { phys };
+    for &i in &void {
+        if let Some(v) = density.get_mut(i) {
+            *v = 0.0;
+        }
+    }
+    for &i in &passive {
+        if let Some(v) = density.get_mut(i) {
+            *v = 1.0;
+        }
+    }
+    Outcome { density, history, converged, cancelled, phases }
 }
 
 /// Profiling aid for the benchmark: runs one part of a design iteration `repeat` times on a
@@ -555,6 +791,11 @@ mod tests {
             cg_tol: 1e-8,
             cg_max: 20_000,
             solver: Solver::Multigrid,
+            beta_final: 0.0,
+            beta_every: 30,
+            tip_rows: 0,
+            coarse_budget: 0,
+            pad_rows: 0,
         }
     }
 
@@ -605,6 +846,34 @@ mod tests {
         let vol = out.history.last().unwrap().volume;
         assert!((vol - 0.5).abs() < 0.01, "volume {vol}");
         assert!(out.history.iter().all(|i| i.cg_converged));
+    }
+
+    #[test]
+    fn tapered_design_area_keeps_cells_above_the_taper_void_and_the_pad_solid() {
+        let p = Problem { load: LoadCase::TipPad(4), tip_rows: 6, beta_final: 4.0, beta_every: 10, max_iterations: 30, volfrac: 0.4, ..beam(40, 12) };
+        assert!(p.check().is_ok());
+        assert_eq!(p.active_rows(0), 12);
+        assert_eq!(p.active_rows(39), 6);
+        let out = optimise(&p, |_, _| true);
+        for i in 0..p.nx {
+            for j in p.active_rows(i)..p.ny {
+                assert_eq!(out.density[i * p.ny + j], 0.0, "cell ({i},{j}) above the taper");
+            }
+        }
+        for &c in &p.passive_cells() {
+            assert_eq!(out.density[c], 1.0);
+        }
+        assert!(out.history.last().unwrap().compliance.is_finite());
+        let vol = out.history.last().unwrap().volume;
+        assert!((vol - 0.4).abs() < 0.03, "volume of the active area {vol}");
+    }
+
+    #[test]
+    fn load_pad_is_as_thick_as_asked() {
+        let p = Problem { load: LoadCase::TipPad(4), pad_rows: 3, ..beam(40, 12) };
+        assert_eq!(p.passive_cells().len(), 4 * 3);
+        let q = Problem { load: LoadCase::TipPad(4), ..beam(40, 12) };
+        assert_eq!(q.passive_cells().len(), 4 * 2, "default is two rows");
     }
 
     #[test]
