@@ -1,0 +1,36 @@
+name: CI
+
+# Every push to main and every pull request: the full build script (tests, clippy
+# -D warnings, wasm component, package) and a check of the optional GPU feature.
+# The end-to-end test (tests/cli-test.sh) needs an installed SolidCraft and runs by hand.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Tests, clippy and package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-tools --locked
+      - run: ./build.sh
+
+  gpu:
+    name: GPU feature builds
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo check --all-targets --features gpu

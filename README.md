@@ -1,9 +1,19 @@
 # Generative Design Engine (SolidCraft plugin)
 
-A SolidCraft command plugin (`craft:plugin@0.1.0`, capability `commands@0.1`).
-Version 0.3: an engineering **material library** that becomes SolidCraft's own physical
-material cards, a per-body **material report**, and a **stress check** for flat parts. A 2D
-topology optimiser exists as a benchmark; generative design itself comes later.
+A [SolidCraft](https://github.com/tangency-labs/solidcraft) command plugin (`craft:plugin@0.1.0`,
+capability `commands@0.1`). Version 0.3: an engineering **material library** that becomes
+SolidCraft's own physical material cards, a per-body **material report**, and a **stress check**
+for flat parts. A 2D topology optimiser exists as a benchmark. Next to the plugin there are three
+command-line tools (3D stress check, printed-part stress check, beam optimiser; see below).
+
+Independent project: not made, endorsed or supported by Tangency Labs or the SolidCraft
+maintainers. "SolidCraft" is their name. The plugin is tested with **SolidCraft 0.43.0 and 0.44.1**
+(`tests/cli-test.sh`).
+
+> **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
+> check them before anyone relies on them for a design, manufacturing or safety decision. The
+> material values are listed below with their sources, and have **not** yet been checked against
+> the standards themselves.
 
 ## Entries
 
@@ -78,6 +88,33 @@ Install: **Preferences › Plugins › Install plugin…** and pick `dist/gen-de
 or `plugin.install {"path": ".../gen-design-engine-<version>.zip", "replace": true}`.
 The plugin needs no command groups, folders, clock or network.
 
+## Command-line tools (outside SolidCraft)
+
+These run natively (no plugin limits on time or memory) and are built with
+`cargo build --release --bins`. They are experimental.
+
+| Tool | What it does |
+|---|---|
+| `stress3d` | 3D voxel stress check of an STL part: majority-vote voxelisation, preconditioned CG solve, von Mises heat maps (PNG) and a report (`report.json`) with the safety factor against a library material. |
+| `stress3d_printed` | The same for a **3D-printed** part: solid walls and top/bottom skins around a lighter infill core, with layers along z. Infill stiffness is `infill^exp` (exp 1 = upper bound, exp 2 = lower bound). |
+| `beam_opt` | Lightest plate-truss for a long cantilever beam: SIMP topology optimisation with a min-member filter, then strut and sideways (lateral-torsional) buckling checks. |
+
+Usage is in the header comment of each file in `src/bin/`. Example:
+
+```bash
+cargo run --release --bin stress3d -- part.stl --material aluminium-6061-t6 \
+  --fix zmin --pin z,50,30,4 --case pull:0,0,-200 --voxel 1.5 --out out/
+```
+
+The optional **GPU solver** (wgpu, f64 multigrid-preconditioned CG) speeds up `beam_opt`
+(`gpu=1`) and needs a GPU with 64-bit float support:
+`cargo build --release --features gpu --bins`. Without the feature, or without a suitable GPU,
+the CPU solver is used. The plugin's WebAssembly build never uses it.
+
+A design from `beam_opt` is a starting point: the plate-truss weight is limited by strut and
+lateral-torsional buckling, not by stiffness or strength, and none of this replaces a proper
+structural calculation.
+
 ## Hardening notes
 
 - Inputs are hostile: unknown fields, non-objects, bad numbers, empty/duplicate/oversized body
@@ -101,7 +138,11 @@ The plugin needs no command groups, folders, clock or network.
 
 0.1.0 (not working): the manifest granted a non-existent command and asked for more than the
 host allows; `plugin.wasm` was SolidCraft's sample box component, not this code; `optimize` and
-`analyze` returned invented numbers. Kept in git history and in
-`winExtra/0000 Claude deprecated/SolidCraft/.generative-design-engine.bak-before-rewrite`.
+`analyze` returned invented numbers. It stays in the git history.
 
-MIT licence.
+## License
+
+Dual-licensed, like SolidCraft itself: **MIT OR Apache-2.0**, at your option. See
+[`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE). Copyright (c) 2026 LudaLunizz.
+The software is provided "as is", without warranty of any kind; see both licences.
+See [SECURITY.md](SECURITY.md) to report a vulnerability and [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.

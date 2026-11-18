@@ -21,7 +21,7 @@ if wasm-tools component wit "$stage/plugin.wasm" | grep -E '^\s*import ' | grep 
   echo "component imports something outside craft:plugin" >&2
   exit 1
 fi
-cp plugin.json README.md LICENSE "$stage/"
+cp plugin.json README.md LICENSE-MIT LICENSE-APACHE "$stage/"
 zip_path="dist/gen-design-engine-$version.zip"
 rm -f "$zip_path"
 (cd target/package && zip -qr -X "../../$zip_path" gen-design-engine)
