@@ -18,8 +18,8 @@ manifest = {
     "id": "gen-design-engine",
     "name": "Generative Design Engine",
     "version": VERSION,
-    "description": "Engineering material library (sourced cards), material report, and a 2D stress check of flat parts "
-                   "with safety factor. Generative design comes in a later version.",
+    "description": "Engineering material library (sourced cards), material report, a 2D stress check of flat parts "
+                   "with safety factor, and a 2D topology-optimiser benchmark. Generative design entries come later.",
     "capabilities": ["commands@0.1"],
     "runtime": {
         "module": "plugin.wasm",
