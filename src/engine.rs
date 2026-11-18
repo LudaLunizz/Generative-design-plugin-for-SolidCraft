@@ -419,6 +419,11 @@ impl BenchParams {
             cg_tol: self.cg_tol,
             cg_max: self.cg_max,
             solver,
+            beta_final: 0.0,
+            beta_every: 30,
+            tip_rows: 0,
+            coarse_budget: 0,
+            pad_rows: 0,
         };
         p.check().map_err(|reason| Failure::input("params", reason))?;
         Ok(p)
@@ -438,7 +443,7 @@ pub fn bench_report(p: &crate::topo2d::Problem, out: &crate::topo2d::Outcome, pi
         "cg_iterations_total": total_cg,
         "cg_iterations_per_design_iteration": cg,
         "all_solves_converged": out.history.iter().all(|i| i.cg_converged),
-        "solver": match p.solver { crate::topo2d::Solver::Jacobi => "jacobi", crate::topo2d::Solver::Multigrid => "multigrid" },
+        "solver": match p.solver { crate::topo2d::Solver::Jacobi => "jacobi", crate::topo2d::Solver::Multigrid => "multigrid", crate::topo2d::Solver::Gpu => "gpu" },
         "multigrid_levels": out.history.first().map(|i| i.levels),
         // One stiffness product touches every element once: 8x8 multiply-adds per element.
         "element_products": (total_cg + out.history.len()) * elements,

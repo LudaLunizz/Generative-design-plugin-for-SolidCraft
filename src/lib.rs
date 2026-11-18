@@ -4,7 +4,10 @@
 //! generative design (topology optimization) and stress analysis entries of 0.1 returned made-up
 //! numbers and are withdrawn until a real solver backs them.
 
+pub mod beam;
 pub mod engine;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod library;
 pub mod mg2d;
 pub mod stress2d;

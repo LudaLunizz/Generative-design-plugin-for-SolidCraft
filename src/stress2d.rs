@@ -351,7 +351,7 @@ pub fn check(input: &Input) -> Result<Output, String> {
     let et = input.e_mpa * thickness;
     // Each cell is as stiff as the share of it that is material, so a round edge is smooth, not stepped.
     let modulus: Vec<f64> = frac.iter().map(|f| et * f.max(1e-9)).collect();
-    let system = System { nx, ny, nu: input.nu, modulus: &modulus, fixed, load: &load, solver: Solver::Multigrid, cg_tol: 1e-9, cg_max: 5000 };
+    let system = System { nx, ny, nu: input.nu, modulus: &modulus, fixed, load: &load, solver: Solver::Multigrid, cg_tol: 1e-9, cg_max: 5000, coarse_budget: 0 };
     let analysis = solve(&system, None, &|| 0.0);
     if !analysis.converged {
         warnings.push("the solver did not fully converge; the supports may leave the part free to move or turn".into());

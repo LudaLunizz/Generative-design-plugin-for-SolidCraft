@@ -498,6 +498,22 @@ impl Hierarchy {
         self.levels.first()
     }
 
+    /// 1 / diagonal of level `l` (1 on fixed DOFs), as the smoother uses it.
+    pub fn inv_diag(&self, l: usize) -> Option<&[f64]> {
+        self.inv_diag.get(l).map(Vec::as_slice)
+    }
+
+    /// The V-cycle's settings.
+    pub fn settings(&self) -> Settings {
+        self.settings
+    }
+
+    /// The coarsest level's solve (banded Cholesky, or sweeps when that was too big), as the
+    /// V-cycle does it: for a GPU V-cycle that keeps only this step on the CPU.
+    pub fn coarse_solve(&self, r: &[f64]) -> Vec<f64> {
+        self.vcycle(self.levels.len().saturating_sub(1), r)
+    }
+
     /// z = M^-1 r: one V-cycle from zero.
     pub fn precondition(&self, r: &[f64]) -> Vec<f64> {
         self.vcycle(0, r)
