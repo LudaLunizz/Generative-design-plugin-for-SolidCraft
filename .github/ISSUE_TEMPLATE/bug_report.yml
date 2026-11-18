@@ -1,0 +1,32 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      description: The version in the zip's name (Model ▸ Plugins lists it)
+      placeholder: gen-design-engine 0.3.1
+    validations:
+      required: true
+  - type: input
+    id: solidcraft
+    attributes:
+      label: SolidCraft version and operating system
+      placeholder: SolidCraft 0.44.1, Ubuntu 26.04
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The entry you ran and its inputs, what you expected and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: The error text or report the plugin returned
+      render: text
