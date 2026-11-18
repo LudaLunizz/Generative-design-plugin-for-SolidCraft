@@ -269,11 +269,16 @@ pub struct Setup<'a> {
     pub cg_max: usize,
     /// Voxel layers around the load and support points left out of the "away" peak.
     pub exclude_layers: usize,
+    /// Relative stiffness per grid cell (1.0 = the full material); None = all cells 1.0. Lets a
+    /// printed part be modelled as a solid shell around a lighter infill core.
+    pub cell_scale: Option<&'a [f64]>,
 }
 
 pub struct CaseResult {
     pub name: String,
     pub vm: Vec<f64>, // per cell, NAN for void
+    /// Stress per cell (sx, sy, sz, txy, tyz, tzx) in MPa, as the cell's own stiffness gives it; NAN for void.
+    pub stress: Vec<[f64; 6]>,
     pub max_vm: f64,
     pub max_vm_at: P3,
     pub p99_vm: f64,
@@ -458,6 +463,8 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
     }
     let ke = brick_stiffness(s.nu);
     let scale = s.e_mpa * grid.h;
+    let cell_rel = |c: usize| s.cell_scale.and_then(|v| v.get(c).copied()).unwrap_or(1.0);
+    let cell_k: Vec<f64> = cells.iter().map(|c| scale * cell_rel(*c)).collect();
     let dofs: Vec<[usize; 24]> = cells
         .iter()
         .map(|c| {
@@ -467,7 +474,7 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
         .collect();
     let apply = |u: &[f64], y: &mut [f64]| {
         y.iter_mut().for_each(|v| *v = 0.0);
-        for d in &dofs {
+        for (d, ck) in dofs.iter().zip(&cell_k) {
             let ue = d.map(|i| u.get(i).copied().unwrap_or(0.0));
             let mut ye = [0.0f64; 24];
             for (row, v) in ke.iter().zip(ue) {
@@ -477,7 +484,7 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             }
             for (i, v) in d.iter().zip(ye) {
                 if let Some(slot) = y.get_mut(*i) {
-                    *slot += scale * v;
+                    *slot += ck * v;
                 }
             }
         }
@@ -488,10 +495,10 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
         }
     };
     let mut diag = vec![0.0; ndof];
-    for d in &dofs {
+    for (d, ck) in dofs.iter().zip(&cell_k) {
         for (k, i) in d.iter().enumerate() {
             if let Some(slot) = diag.get_mut(*i) {
-                *slot += scale * ke.get(k).and_then(|r| r.get(k)).copied().unwrap_or(0.0);
+                *slot += ck * ke.get(k).and_then(|r| r.get(k)).copied().unwrap_or(0.0);
             }
         }
     }
@@ -536,7 +543,9 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
         let lam = s.e_mpa * s.nu / ((1.0 + s.nu) * (1.0 - 2.0 * s.nu));
         let mu = s.e_mpa / (2.0 * (1.0 + s.nu));
         let mut vm = vec![f64::NAN; grid.cells()];
+        let mut stress = vec![[f64::NAN; 6]; grid.cells()];
         for (c, d) in cells.iter().zip(&dofs) {
+            let (lam, mu) = (lam * cell_rel(*c), mu * cell_rel(*c));
             let ue = d.map(|i| u.get(i).copied().unwrap_or(0.0));
             let e: [f64; 6] = std::array::from_fn(|r| b0.get(r).map(|row| row.iter().zip(&ue).map(|(a, b)| a * b).sum()).unwrap_or(0.0));
             let tr = e[0] + e[1] + e[2];
@@ -545,6 +554,9 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             let v = (0.5 * ((sx - sy).powi(2) + (sy - sz).powi(2) + (sz - sx).powi(2)) + 3.0 * (txy * txy + tyz * tyz + tzx * tzx)).sqrt();
             if let Some(slot) = vm.get_mut(*c) {
                 *slot = v;
+            }
+            if let Some(slot) = stress.get_mut(*c) {
+                *slot = [sx, sy, sz, txy, tyz, tzx];
             }
         }
         let (mut max_vm, mut max_c) = (0.0, 0);
@@ -582,6 +594,7 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
         results.push(CaseResult {
             name: case.name.clone(),
             vm,
+            stress,
             max_vm,
             max_vm_at: grid.cell_centre(max_c),
             p99_vm: p99,
@@ -869,7 +882,7 @@ mod tests {
         let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
         let fixed = Region::Side { axis: 0, max: false, depth: 0.01 };
         let load = Region::Side { axis: 0, max: true, depth: 0.01 };
-        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 20_000, exclude_layers: 2 };
+        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 20_000, exclude_layers: 2, cell_scale: None };
         let cases = [Case { name: "tip".into(), force: [0.0, 0.0, -10.0], moment: [0.0; 3] }];
         let a = analyse(&setup, &cases, |_| {}).unwrap();
         let r = &a.cases[0];
@@ -887,7 +900,7 @@ mod tests {
         let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
         let fixed = Region::Side { axis: 1, max: false, depth: 0.01 };
         let load = Region::Side { axis: 1, max: true, depth: 0.01 };
-        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 5000, exclude_layers: 2 };
+        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 5000, exclude_layers: 2, cell_scale: None };
         let cases = [Case { name: "twist".into(), force: [0.0; 3], moment: [0.0, 100.0, 0.0] }];
         assert!(analyse(&setup, &cases, |_| {}).is_ok());
     }
