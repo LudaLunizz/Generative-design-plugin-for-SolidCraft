@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.4.2"
+VERSION = "0.5.0"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
@@ -97,7 +97,7 @@ manifest = {
         ],
         "commands": sorted(["document.inspect", "inspect.measure", "material.assign", "material.create",
                             "material.list", "model.faces", "model.mesh", "sketch.create", "sketch.finish",
-                            "sketch.line", "solid.extrude"]),
+                            "sketch.line", "sketch.spline.fit_point", "solid.extrude"]),
         "limits": {"fuel": 100000000000, "memory_mib": 64, "deadline_ms": 30000},
     },
 }

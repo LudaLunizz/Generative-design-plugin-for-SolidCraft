@@ -778,7 +778,7 @@ fn plate_grid(width: f64, height: f64, cells: usize) -> (usize, usize, f64) {
 }
 
 fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> Result<Value, Failure<H::Error>> {
-    use crate::outline::{Mask, outlines, signed_area};
+    use crate::outline::{Mask, Piece, Shape, smooth_outlines};
     use crate::topo2d::{LoadCase, Problem, Solver, analyse, optimise};
 
     let width = in_range("width_mm", p.width_mm, 1.0, 10_000.0)?;
@@ -873,16 +873,17 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
         return Err(Failure::input("params", "the optimiser left no material at the fixed edge; raise volume_share or iterations"));
     }
     let filled = mask.close_diagonal_contacts().map_err(Failure::Internal)?;
-    let loops = outlines(&mask, 0.3).map_err(Failure::Internal)?;
-    let points: usize = loops.iter().map(Vec::len).sum();
+    let loops = smooth_outlines(&mask).map_err(Failure::Internal)?;
+    let points: usize = loops.iter().map(|o| o.drawn_points()).sum();
     if loops.is_empty() || loops.len() > MAX_PLATE_LOOPS || points > MAX_PLATE_POINTS {
         return Err(Failure::input(
             "params",
             format!("the result has {} outlines and {points} points; raise volume_share or filter_radius, or lower cells", loops.len()),
         ));
     }
-    let holes = loops.iter().filter(|l| signed_area(l) < 0.0).count();
-    let area_cells: f64 = loops.iter().map(|l| signed_area(l)).sum();
+    let holes = loops.iter().filter(|o| o.area < 0.0).count();
+    let curves = loops.iter().filter(|o| !matches!(o.shape, Shape::Polygon(_))).count();
+    let area_cells: f64 = loops.iter().map(|o| o.area).sum();
     let area_mm2 = area_cells * cell * cell;
     let volume_mm3 = area_mm2 * thickness;
     let mass_g = volume_mm3 * density * 1e-6;
@@ -914,8 +915,20 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
         if host.cancelled() {
             return Err(Failure::Cancelled);
         }
-        let pts: Vec<Value> = outline.iter().map(|&(x, y)| json!([round(x * cell, 4), round(y * cell, 4)])).collect();
-        host.run("sketch.line", &json!({ "points": pts, "closed": true }))?;
+        let mm = |pts: &[(f64, f64)]| -> Vec<Value> { pts.iter().map(|&(x, y)| json!([round(x * cell, 4), round(y * cell, 4)])).collect() };
+        match &outline.shape {
+            Shape::Polygon(p) => host.run("sketch.line", &json!({ "points": mm(p), "closed": true }))?,
+            Shape::Spline(p) => host.run("sketch.spline.fit_point", &json!({ "points": mm(p), "periodic": true }))?,
+            Shape::Mixed(pieces) => {
+                for piece in pieces {
+                    match piece {
+                        Piece::Line(p) => host.run("sketch.line", &json!({ "points": mm(p) }))?,
+                        Piece::Curve(p) => host.run("sketch.spline.fit_point", &json!({ "points": mm(p) }))?,
+                    };
+                }
+                Value::Null
+            }
+        };
     }
     host.run("sketch.finish", &json!({}))?;
     host.progress(0.93, "Extruding");
@@ -970,6 +983,7 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
             "mass_g": round(mass_g, 2),
             "outlines": loops.len(),
             "holes": holes,
+            "curved_outlines": curves,
             "outline_points": points,
         },
         "optimiser": {
@@ -987,7 +1001,7 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
         "dropped_cells": dropped,
         "warnings": warnings,
         "next": "This is stiffness-optimised only: strength, stress concentrations and buckling are NOT checked. Run stress-check on the new body (fixed: -x, and the load face) before relying on it.",
-        "method": "2D SIMP topology optimisation (density filter, optimality criteria, multigrid solver) of a plate of one thickness; cells above 0.5 density are material; only what is joined to the fixed edge is kept; the staircase boundary is smoothed (corners of real size are kept) and drawn as closed sketch lines, then extruded. A design aid, not a certified analysis.",
+        "method": "2D SIMP topology optimisation (density filter, optimality criteria, multigrid solver) of a plate of one thickness; cells above 0.5 density are material; only what is joined to the fixed edge is kept; the cell boundary is smoothed (Taubin's method, the plate's own edges kept straight) and drawn as sketch splines, with straight lines along the plate's edges, then extruded. A design aid, not a certified analysis.",
     }))
 }
 
@@ -1088,8 +1102,8 @@ mod tests {
                     Ok(json!({ "faces": list }))
                 }
                 "sketch.create" | "sketch.finish" => Ok(json!({})),
-                "sketch.line" => {
-                    self.lines.push(args.clone());
+                "sketch.line" | "sketch.spline.fit_point" => {
+                    self.lines.push(json!({ "command": command, "args": args }));
                     Ok(json!({}))
                 }
                 "solid.extrude" => {
@@ -1357,10 +1371,11 @@ mod tests {
         assert!(order.contains(&"sketch.finish") && order.contains(&"solid.extrude"));
         assert_eq!(order.last(), Some(&"material.assign"));
         assert!(!host.lines.is_empty());
-        assert_eq!(host.lines.len() as u64, out["design"]["outlines"].as_u64().unwrap());
+        assert!(host.lines.len() as u64 >= out["design"]["outlines"].as_u64().unwrap());
+        assert!(host.lines.iter().any(|l| l["command"] == "sketch.spline.fit_point"), "the outline is drawn with curves");
+        assert!(out["design"]["curved_outlines"].as_u64().unwrap() >= 1);
         for line in &host.lines {
-            assert_eq!(line["closed"], true);
-            for pt in line["points"].as_array().unwrap() {
+            for pt in line["args"]["points"].as_array().unwrap() {
                 let (x, y) = (pt[0].as_f64().unwrap(), pt[1].as_f64().unwrap());
                 assert!((-1e-6..=120.0 + 1e-6).contains(&x) && (-1e-6..=60.0 + 1e-6).contains(&y), "({x}, {y}) is outside the plate");
             }
