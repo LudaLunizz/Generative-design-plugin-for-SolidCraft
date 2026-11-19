@@ -131,8 +131,8 @@ impl Problem {
         if self.beta_every == 0 {
             return Err("beta_every: expected at least 1".into());
         }
-        if !(1..=1000).contains(&self.max_iterations) || !(1..=100_000).contains(&self.cg_max) {
-            return Err("max_iterations 1-1000, cg_max 1-100000".into());
+        if !(1..=5000).contains(&self.max_iterations) || !(1..=100_000).contains(&self.cg_max) {
+            return Err("max_iterations 1-5000, cg_max 1-100000".into());
         }
         Ok(())
     }

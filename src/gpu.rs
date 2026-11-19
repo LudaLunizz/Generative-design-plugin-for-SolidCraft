@@ -386,6 +386,7 @@ impl GpuMg {
         }
         let h = Hierarchy::new(fine, settings);
         times.hierarchy = t0.elapsed().as_secs_f64();
+        throttle(std::time::Duration::ZERO); // the uploads below are GPU work too: wait for room first
         let t1 = std::time::Instant::now();
         let d = &self.device;
         let st = wgpu::BufferUsages::STORAGE;
@@ -637,10 +638,10 @@ static MAX_BUSY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::ne
 
 /// Limits the GPU to about `percent` busy, counting everything else that uses it (the desktop,
 /// open windows). After every solver step (a millisecond or two) the solve waits `step time x k`.
-/// `k` starts at `(100 - percent) / percent`, which alone holds this program's own share to the
-/// limit; where the kernel reports the GPU's total busy share (amdgpu:
+/// `k` starts so that this program's own share is `percent - 30` (room for the desktop); where the kernel reports the GPU's total busy share (amdgpu:
 /// `/sys/class/drm/card*/device/gpu_busy_percent`) it is read every few steps and `k` grows while
-/// the total is over the limit and shrinks back when it is well under.
+/// the total is over the limit and shrinks back when it is well under. Before every step and every
+/// solve's upload it also waits while the total is within 10 points of the limit.
 pub fn set_max_busy(percent: u32) {
     MAX_BUSY.store(percent.clamp(1, 100), std::sync::atomic::Ordering::Relaxed);
 }
@@ -663,7 +664,10 @@ fn throttle(step: std::time::Duration) {
     if p >= 100 {
         return;
     }
-    let base = f64::from(100 - p) / f64::from(p);
+    // Leave 30 points for everything else on the GPU: the desktop alone reaches about 50 % in short
+    // bursts that the busy reading catches too late, so this program's own share starts at `p - 30`.
+    let own = p.saturating_sub(30).max(5);
+    let base = f64::from(100 - own) / f64::from(own);
     let wait = {
         let Ok(mut guard) = THROTTLE.lock() else { return };
         let t = guard.get_or_insert_with(|| {
@@ -683,9 +687,17 @@ fn throttle(step: std::time::Duration) {
                 t.k = (t.k * 0.85).max(base);
             }
         }
-        step.mul_f64(t.k)
+        (step.mul_f64(t.k), t.busy_files.clone())
     };
-    std::thread::sleep(wait);
+    std::thread::sleep(wait.0);
+    // Hard gate: before the next GPU work, wait (2 ms at a time, 0.2 s at most) while the whole GPU
+    // is within 10 points of the limit, so this program's burst never lands on top of a busy desktop.
+    for _ in 0..100 {
+        match total_busy(&wait.1) {
+            Some(total) if total + 10 > p => std::thread::sleep(std::time::Duration::from_millis(2)),
+            _ => break,
+        }
+    }
 }
 
 /// One GPU for the whole process, opened on first use. Solves from several threads take turns.

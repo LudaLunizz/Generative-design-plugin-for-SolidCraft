@@ -180,15 +180,23 @@ writes in the open design (`solidcraft-cli run refine.json`, or the MCP `batch {
 ```bash
 cargo build --release --features gpu --bin plate_refine
 target/release/plate_refine width=200 height=100 thickness=10 material=petg-printed share=0.4 \
-  cells=480 iterations=150 min_member=3 round=4 name="Refined plate" --out refine.json
+  cells=480 min_member=3 round=4 name="Refined plate" --out refine.json
 ```
 
-The GPU limit (`gpu_max`, default 80) counts the whole GPU, the desktop included: after every
-solver step the tool pauses for a share of the step's time, and where the kernel reports the
-GPU's busy share (amdgpu `gpu_busy_percent`) it lengthens the pauses while the total is over the
-limit. Measured on an RX 5700 XT with the desktop running: 200 x 100 mm at 480 x 240 cells,
-150 iterations in about 19 s, GPU at most 80 % busy (mean 38 %). Without the limit the same run
-takes about 11 s and touches 90 %. Rounding is a morphological closing (grow by the fillet radius,
+The refine pass runs until the design has settled (each cell changes by less than 1 % in a step;
+the limit is 3,000 iterations): the 200 x 100 mm PETG plate at 480 x 240 cells settled after
+1,340 iterations in about 3 minutes (104.4 g; at 300 iterations it was 104.4 g too).
+
+The GPU limit (`gpu_max`, default 80) counts the whole GPU, the desktop included. This tool's own
+share starts at the limit minus 30 points (the desktop alone reaches about 50-60 % in short
+bursts); after every solver step it pauses for a share of the step's time, and where the kernel
+reports the GPU's busy share (amdgpu `gpu_busy_percent`) the pauses grow while the total is over
+the limit, and the next step waits while the total is within 10 points of it. Measured on an
+RX 5700 XT with the desktop running (busy share sampled 10 times a second over the 3-minute run):
+the 1-second average never above 67 %; 6 single readings of 1,653 (0.4 %) touched 81-84 %, where a
+desktop redraw and a solver step fell together. The desktop alone, over 4 minutes: at most 61 %.
+
+Rounding is a morphological closing (grow by the fillet radius,
 then shrink by it) on an exact distance transform (Felzenszwalb and Huttenlocher), so it only adds
 material: no member gets thinner, holes narrower than the fillet close.
 
