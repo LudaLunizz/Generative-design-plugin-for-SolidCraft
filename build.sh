@@ -25,4 +25,5 @@ cp plugin.json README.md LICENSE-MIT LICENSE-APACHE "$stage/"
 zip_path="dist/gen-design-engine-$version.zip"
 rm -f "$zip_path"
 (cd target/package && zip -qr -X "../../$zip_path" gen-design-engine)
-sha256sum "$zip_path" | tee "$zip_path.sha256"
+# Bare file name, so `sha256sum -c` works in the folder the zip is downloaded to.
+(cd dist && sha256sum "$(basename "$zip_path")") | tee "$zip_path.sha256"
