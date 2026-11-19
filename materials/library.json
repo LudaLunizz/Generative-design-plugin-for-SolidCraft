@@ -26,6 +26,11 @@
       "kind": "public_reference",
       "reference": "ASTM B348/B348M, titanium and titanium alloy bars and billets"
     },
+    "aluminium-minimums": {
+      "title": "Specification minimums (not typical values): 6061-T6 yield 240 / tensile 260 MPa (extrusion and bar minimum; sheet and plate guarantee 240 / 290); 7075-T6/T651 yield 460 / tensile 540 MPa (plate 6.3-12.5 mm, unclad)",
+      "kind": "public_reference",
+      "reference": "ASTM B209M-14 table 3 (sheet and plate); Aluminum Association Standards and Data table 11.1 (extrusions, same limits as ASTM B221); EN 485-2 and EN 755-2. ksi values converted. Thicker plate, clad sheet and other tempers differ; check the supplier's certificate"
+    },
     "prusament-pla": {
       "title": "Prusament PLA technical data sheet v1.1 (27 Jul 2022): printed ISO 527 specimens, 0.20 mm layers, 215 C, 100% rectilinear infill, flat",
       "kind": "public_reference",
@@ -54,13 +59,12 @@
       "color": "#b9bdc3",
       "family": "metal",
       "designation": "Aluminium alloy 6061 (EN AW-6061), temper T6",
-      "notes": "General machining alloy. Strength values are ASM typical values, checked against the ASM data sheet (19 Nov 2026), not guaranteed minimums; the Aluminum Association marks typical values not for design, and the specified minimums are lower (about 240 MPa yield, 260 MPa tensile, by product form). Plate is usually T651 with the same properties. The Poisson ratio is an ASM estimate.",
+      "notes": "General machining alloy. Yield 240 and tensile 260 MPa are SPECIFICATION MINIMUMS (extrusion and bar; sheet and plate guarantee 240 / 290), not the ASM typical 276 / 310 MPa, which the Aluminum Association marks not for design (ASTM B209M-14 table 3, Aluminum Association table 11.1, EN 755-2; checked 19 Nov 2026). Physical values are ASM typical. No shear strength is listed: no specification guarantees one. Plate is usually T651 with the same minimums. The Poisson ratio is an ASM estimate.",
       "properties": [
         {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 2700.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 68.9e9, "poisson_ratio": 0.33}}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
-        {"source_id": "asm-typical", "data": {"kind": "yield_strength", "pa": 276e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
-        {"source_id": "asm-typical", "data": {"kind": "tensile_strength", "pa": 310e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
-        {"source_id": "asm-typical", "data": {"kind": "shear_strength", "pa": 207e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "aluminium-minimums", "data": {"kind": "yield_strength", "pa": 240e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "aluminium-minimums", "data": {"kind": "tensile_strength", "pa": 260e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [167.0, 167.0, 167.0], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [23.6e-6, 23.6e-6, 23.6e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 896.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}}
@@ -72,13 +76,12 @@
       "color": "#aeb3ba",
       "family": "metal",
       "designation": "Aluminium alloy 7075 (EN AW-7075), temper T6",
-      "notes": "High-strength alloy. Strength values are ASM typical values, checked against the ASM data sheet (19 Nov 2026), not guaranteed minimums. The Poisson ratio is an ASM estimate.",
+      "notes": "High-strength alloy. Yield 460 and tensile 540 MPa are SPECIFICATION MINIMUMS (plate 6.3-12.5 mm, unclad, ASTM B209M-14 table 3 and EN 485-2), not the ASM typical 503 / 572 MPa. Thicker plate (25-50 mm) guarantees 530 tensile, thin sheet under 0.32 mm guarantees 435 yield, clad sheet is lower. Physical values are ASM typical. No shear strength is listed. The Poisson ratio is an ASM estimate.",
       "properties": [
         {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 2810.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 71.7e9, "poisson_ratio": 0.33}}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
-        {"source_id": "asm-typical", "data": {"kind": "yield_strength", "pa": 503e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
-        {"source_id": "asm-typical", "data": {"kind": "tensile_strength", "pa": 572e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
-        {"source_id": "asm-typical", "data": {"kind": "shear_strength", "pa": 331e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "aluminium-minimums", "data": {"kind": "yield_strength", "pa": 460e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "aluminium-minimums", "data": {"kind": "tensile_strength", "pa": 540e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [130.0, 130.0, 130.0], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [23.6e-6, 23.6e-6, 23.6e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 960.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}}

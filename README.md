@@ -8,7 +8,7 @@ and an extrude. Next to the plugin there are three command-line tools (3D stress
 printed-part stress check, beam optimiser; see below).
 
 Independent project: not made, endorsed or supported by Tangency Labs or the SolidCraft
-maintainers. "SolidCraft" is their name. Version 0.4.0 is tested with **SolidCraft 0.44.1**
+maintainers. "SolidCraft" is their name. Version 0.4.1 is tested with **SolidCraft 0.44.1**
 (`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
@@ -69,8 +69,8 @@ report says how much stress a material may take, not how much the part gets.
 
 | Id | Material | Values |
 |---|---|---|
-| `aluminium-6061-t6` | Aluminium 6061-T6 | typical (ASM handbook-style) |
-| `aluminium-7075-t6` | Aluminium 7075-T6 | typical |
+| `aluminium-6061-t6` | Aluminium 6061-T6 | specification minimums for strength (yield 240, tensile 260 MPa), ASM typical for the rest |
+| `aluminium-7075-t6` | Aluminium 7075-T6 | specification minimums for strength (yield 460, tensile 540 MPa), ASM typical for the rest |
 | `steel-s235jr` | Steel S235JR | EN 10025-2 minimums, Eurocode E/nu/density |
 | `steel-s355jr` | Steel S355JR | EN 10025-2 minimums, Eurocode E/nu/density |
 | `stainless-304` | Stainless steel 304 | ASTM A240 minimum strengths, typical physical values |
@@ -87,9 +87,13 @@ reseller copies, mill data sheets, Eurocode summaries; the standards themselves 
 the four plastics replaced by manufacturer data sheets of printed specimens. One correction came
 out of it (7075 thermal expansion 23.6, not 23.4). Things to know:
 
-- 6061-T6 and 7075-T6 use ASM *typical* strengths; the guaranteed minimums are lower (6061-T6 about
-  240 MPa yield, 260 MPa tensile). Use a safety factor that covers this, or check your supplier's
-  certificate.
+- 6061-T6 and 7075-T6 use guaranteed **specification minimums** for yield and tensile strength
+  (since 0.4.1; 0.4.0 had the ASM typical values 276 / 310 and 503 / 572 MPa, which the Aluminum
+  Association marks not for design). 6061-T6: 240 / 260 MPa, the extrusion and bar minimum (sheet
+  and plate guarantee 240 / 290). 7075-T6: 460 / 540 MPa, plate 6.3-12.5 mm unclad (ASTM
+  B209M-14 table 3, Aluminum Association table 11.1, EN 485-2 / 755-2). Thicker plate, clad sheet
+  and other forms differ; check the supplier's certificate. No shear strength is listed, because no
+  specification guarantees one.
 - S355JR tensile is the EN 10025-2 product minimum (470 MPa); Eurocode 3 designs with 490 MPa.
   Yield drops for sections thicker than 16 mm.
 - 304 and 316L follow the ASTM/ASM side (density 8000, E 193 GPa); EN 1.4301/1.4404 data sheets
