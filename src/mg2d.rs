@@ -90,6 +90,31 @@ impl Level {
         }
     }
 
+    /// `apply` for a level of full matrices that were packed for SIMD (`packed[e]` is cell `e`).
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    fn apply_packed(&self, packed: &[simd::Packed], u: &[f64], y: &mut [f64]) {
+        y.iter_mut().for_each(|v| *v = 0.0);
+        let col = 2 * (self.ny + 1);
+        for ex in 0..self.nx {
+            let (left, right) = y.split_at_mut((ex + 1) * col);
+            let (Some(y0), Some(y1), Some(u0), Some(u1), Some(cells)) = (
+                left.get_mut(ex * col..),
+                right.get_mut(..col),
+                u.get(ex * col..(ex + 1) * col),
+                u.get((ex + 1) * col..(ex + 2) * col),
+                packed.get(ex * self.ny..(ex + 1) * self.ny),
+            ) else {
+                return;
+            };
+            column_product(cells.iter().map(|k| (k, 1.0)), simd::cell_product, u0, u1, y0, y1);
+        }
+        for (out, fixed) in y.iter_mut().zip(&self.fixed) {
+            if *fixed {
+                *out = 0.0;
+            }
+        }
+    }
+
     /// The diagonal, with 1 on fixed DOFs and wherever it is not positive.
     pub fn diagonal(&self) -> Vec<f64> {
         let mut diag = vec![0.0; self.ndof()];
@@ -135,57 +160,88 @@ impl Level {
         }
         // Per coarse cell: kc = sum over its 4 fine cells of P_f^T K_f P_f, with P_f the 8 x 8
         // interpolation from the coarse cell's DOFs to that fine cell's DOFs. Each fine node takes
-        // its value from 1, 2 or 4 coarse corners, so P_f has at most 18 non-zeros; rows of fixed
-        // fine DOFs and columns of fixed coarse DOFs are left out, which drops the supports.
+        // its value from 1, 2 or 4 coarse corners, so P_f has at most 18 non-zeros. The four P_f
+        // are the same for every coarse cell, so their non-zeros are listed once; cells that touch
+        // a support filter the list (rows of fixed fine DOFs and columns of fixed coarse DOFs are
+        // left out, which drops the supports), all other cells use it as it is.
         // Coarse corner order matches cell_dofs: (0,0), (2,0), (2,2), (0,2) in fine-node units.
         let corners = [(0usize, 0usize), (2, 0), (2, 2), (0, 2)];
+        let table: Vec<Vec<(usize, usize, f64)>> = (0..4)
+            .map(|which| {
+                let (a, b) = (which / 2, which % 2);
+                let nodes = [(a, b), (a + 1, b), (a + 1, b + 1), (a, b + 1)];
+                let mut list = Vec::with_capacity(18);
+                for (node, (p, q)) in nodes.iter().enumerate() {
+                    for (corner, (px, qy)) in corners.iter().enumerate() {
+                        let w = (1.0 - (*p as f64 - *px as f64).abs() / 2.0).max(0.0) * (1.0 - (*q as f64 - *qy as f64).abs() / 2.0).max(0.0);
+                        if w == 0.0 {
+                            continue;
+                        }
+                        for c in 0..2 {
+                            list.push((2 * node + c, 2 * corner + c, w));
+                        }
+                    }
+                }
+                list
+            })
+            .collect();
+        let is_fixed = |d: usize| self.fixed.get(d).copied().unwrap_or(true);
+        let shared: Option<Vec<Mat8>> = match &self.cells {
+            Cells::Scaled { ke, .. } => Some(
+                table
+                    .iter()
+                    .map(|list| {
+                        let mut g = [[0.0f64; 8]; 8];
+                        accumulate(&mut g, ke, list);
+                        g
+                    })
+                    .collect(),
+            ),
+            Cells::Full(_) => None,
+        };
         let mut cells = Vec::with_capacity(cx * cy);
-        let mut entries: Vec<(usize, usize, f64)> = Vec::with_capacity(18);
+        let mut filtered: Vec<(usize, usize, f64)> = Vec::with_capacity(18);
         for ex in 0..cx {
             for ey in 0..cy {
                 let coarse = cell_dofs(cy, ex, ey);
+                let coarse_fixed = |ci: usize| coarse.get(ci).is_none_or(|d| fixed.get(*d).copied().unwrap_or(true));
+                // Does any support touch this coarse cell's 3 x 3 patch of fine nodes?
+                let touches = (0..3).any(|p| (0..3).any(|q| {
+                    let node = (2 * ex + p) * (self.ny + 1) + 2 * ey + q;
+                    is_fixed(2 * node) || is_fixed(2 * node + 1)
+                })) || (0..8).any(coarse_fixed);
                 let mut kc = [[0.0f64; 8]; 8];
-                for a in 0..2 {
-                    for b in 0..2 {
-                        let (fx, fy) = (2 * ex + a, 2 * ey + b);
-                        let k = self.cell_matrix(fx * self.ny + fy);
-                        let fine = cell_dofs(self.ny, fx, fy);
-                        // The fine cell's nodes in the coarse cell's 3x3 node patch.
-                        let nodes = [(a, b), (a + 1, b), (a + 1, b + 1), (a, b + 1)];
-                        entries.clear();
-                        for (node, (p, q)) in nodes.iter().enumerate() {
-                            for (corner, (px, qy)) in corners.iter().enumerate() {
-                                let w = (1.0 - (*p as f64 - *px as f64).abs() / 2.0).max(0.0) * (1.0 - (*q as f64 - *qy as f64).abs() / 2.0).max(0.0);
-                                if w == 0.0 {
-                                    continue;
-                                }
-                                for c in 0..2 {
-                                    let (fi, ci) = (2 * node + c, 2 * corner + c);
-                                    let fine_fixed = fine.get(fi).is_none_or(|d| self.fixed.get(*d).copied().unwrap_or(true));
-                                    let coarse_fixed = coarse.get(ci).is_none_or(|d| fixed.get(*d).copied().unwrap_or(true));
-                                    if !fine_fixed && !coarse_fixed {
-                                        entries.push((fi, ci, w));
-                                    }
-                                }
-                            }
-                        }
-                        // kp = K_f P_f (8 x 8), then kc += P_f^T kp.
-                        let mut kp = [[0.0f64; 8]; 8];
-                        for &(fi, ci, w) in &entries {
-                            for (kprow, krow) in kp.iter_mut().zip(&k) {
-                                if let (Some(out), Some(kv)) = (kprow.get_mut(ci), krow.get(fi)) {
-                                    *out += kv * w;
-                                }
-                            }
-                        }
-                        for &(fi, ci, w) in &entries {
-                            if let (Some(kcrow), Some(kprow)) = (kc.get_mut(ci), kp.get(fi)) {
-                                for (out, v) in kcrow.iter_mut().zip(kprow) {
-                                    *out += w * v;
-                                }
+                // A fine level of one shared matrix times a modulus per cell: the four products
+                // P^T Ke P are the same for every cell, so a coarse cell away from the supports
+                // is just their modulus-weighted sum.
+                if !touches
+                    && let (Some(g), Cells::Scaled { modulus, .. }) = (&shared, &self.cells)
+                {
+                    for (which, gm) in g.iter().enumerate() {
+                        let (fx, fy) = (2 * ex + which / 2, 2 * ey + which % 2);
+                        let m = modulus.get(fx * self.ny + fy).copied().unwrap_or(0.0);
+                        for (out_row, row) in kc.iter_mut().zip(gm) {
+                            for (out, v) in out_row.iter_mut().zip(row) {
+                                *out += m * v;
                             }
                         }
                     }
+                    cells.push(kc);
+                    continue;
+                }
+                for (which, list) in table.iter().enumerate() {
+                    let (a, b) = (which / 2, which % 2);
+                    let (fx, fy) = (2 * ex + a, 2 * ey + b);
+                    let k = self.cell_matrix(fx * self.ny + fy);
+                    let entries: &[(usize, usize, f64)] = if touches {
+                        let fine = cell_dofs(self.ny, fx, fy);
+                        filtered.clear();
+                        filtered.extend(list.iter().filter(|(fi, ci, _)| !fine.get(*fi).is_none_or(|d| is_fixed(*d)) && !coarse_fixed(*ci)));
+                        &filtered
+                    } else {
+                        list
+                    };
+                    accumulate(&mut kc, &k, entries);
                 }
                 cells.push(kc);
             }
@@ -194,23 +250,40 @@ impl Level {
     }
 
     /// Bilinear interpolation of a coarse vector, added to `fine` (this level is the fine one).
+    /// Two passes, because bilinear interpolation is separable: up each coarse column to the fine
+    /// height, then across the columns. Fixed fine DOFs get nothing.
     fn prolong_add(&self, coarse: &[f64], fine: &mut [f64]) {
-        let cy = self.ny / 2;
-        for i in 0..=self.nx {
-            for j in 0..=self.ny {
-                for c in 0..2 {
-                    let f = 2 * (i * (self.ny + 1) + j) + c;
-                    if self.fixed.get(f).copied().unwrap_or(true) {
-                        continue;
+        let (cx, cy) = (self.nx / 2, self.ny / 2);
+        let (fw, cw) = (2 * (self.ny + 1), 2 * (cy + 1));
+        let mut tall = vec![0.0; (cx + 1) * fw];
+        for (ccol, tcol) in coarse.chunks_exact(cw).zip(tall.chunks_exact_mut(fw)) {
+            for j in 0..=cy {
+                let (Some(&c0), Some(&c1)) = (ccol.get(2 * j), ccol.get(2 * j + 1)) else { continue };
+                if let Some([a, b]) = tcol.get_mut(4 * j..4 * j + 2) {
+                    *a = c0;
+                    *b = c1;
+                }
+                if j < cy
+                    && let (Some(&d0), Some(&d1)) = (ccol.get(2 * j + 2), ccol.get(2 * j + 3))
+                    && let Some([a, b]) = tcol.get_mut(4 * j + 2..4 * j + 4)
+                {
+                    *a = 0.5 * (c0 + d0);
+                    *b = 0.5 * (c1 + d1);
+                }
+            }
+        }
+        for (i, (fcol, fixed)) in fine.chunks_exact_mut(fw).zip(self.fixed.chunks_exact(fw)).enumerate() {
+            let Some(t0) = tall.get((i / 2) * fw..(i / 2 + 1) * fw) else { continue };
+            if i % 2 == 0 {
+                for ((f, t), fx) in fcol.iter_mut().zip(t0).zip(fixed) {
+                    if !fx {
+                        *f += t;
                     }
-                    let mut v = 0.0;
-                    for (ci, wi) in parents(i) {
-                        for (cj, wj) in parents(j) {
-                            v += wi * wj * coarse.get(2 * (ci * (cy + 1) + cj) + c).copied().unwrap_or(0.0);
-                        }
-                    }
-                    if let Some(slot) = fine.get_mut(f) {
-                        *slot += v;
+                }
+            } else if let Some(t1) = tall.get((i / 2 + 1) * fw..(i / 2 + 2) * fw) {
+                for (((f, a), b), fx) in fcol.iter_mut().zip(t0).zip(t1).zip(fixed) {
+                    if !fx {
+                        *f += 0.5 * (a + b);
                     }
                 }
             }
@@ -219,23 +292,44 @@ impl Level {
 
     /// The transpose of `prolong_add`: fine residual to the coarse grid.
     fn restrict(&self, fine: &[f64], coarse_fixed: &[bool]) -> Vec<f64> {
-        let cy = self.ny / 2;
+        let (cx, cy) = (self.nx / 2, self.ny / 2);
+        let (fw, cw) = (2 * (self.ny + 1), 2 * (cy + 1));
+        // Across the columns first (fixed fine DOFs count as zero).
+        let mut tall = vec![0.0; (cx + 1) * fw];
+        for (i, (fcol, fixed)) in fine.chunks_exact(fw).zip(self.fixed.chunks_exact(fw)).enumerate() {
+            let weight = if i % 2 == 0 { 1.0 } else { 0.5 };
+            if let Some(t) = tall.get_mut((i / 2) * fw..(i / 2 + 1) * fw) {
+                for ((o, f), fx) in t.iter_mut().zip(fcol).zip(fixed) {
+                    if !fx {
+                        *o += weight * f;
+                    }
+                }
+            }
+            if i % 2 == 1
+                && let Some(t) = tall.get_mut((i / 2 + 1) * fw..(i / 2 + 2) * fw)
+            {
+                for ((o, f), fx) in t.iter_mut().zip(fcol).zip(fixed) {
+                    if !fx {
+                        *o += 0.5 * f;
+                    }
+                }
+            }
+        }
+        // Then down each column to the coarse height.
         let mut out = vec![0.0; coarse_fixed.len()];
-        for i in 0..=self.nx {
-            for j in 0..=self.ny {
-                for c in 0..2 {
-                    let f = 2 * (i * (self.ny + 1) + j) + c;
-                    if self.fixed.get(f).copied().unwrap_or(true) {
-                        continue;
-                    }
-                    let v = fine.get(f).copied().unwrap_or(0.0);
-                    for (ci, wi) in parents(i) {
-                        for (cj, wj) in parents(j) {
-                            if let Some(slot) = out.get_mut(2 * (ci * (cy + 1) + cj) + c) {
-                                *slot += wi * wj * v;
-                            }
-                        }
-                    }
+        for (tcol, ocol) in tall.chunks_exact(fw).zip(out.chunks_exact_mut(cw)) {
+            for (j, node) in tcol.chunks_exact(2).enumerate() {
+                let (Some(&n0), Some(&n1)) = (node.first(), node.get(1)) else { continue };
+                let weight = if j % 2 == 0 { 1.0 } else { 0.5 };
+                if let Some([a, b]) = ocol.get_mut(2 * (j / 2)..2 * (j / 2) + 2) {
+                    *a += weight * n0;
+                    *b += weight * n1;
+                }
+                if j % 2 == 1
+                    && let Some([a, b]) = ocol.get_mut(2 * (j / 2 + 1)..2 * (j / 2 + 1) + 2)
+                {
+                    *a += 0.5 * n0;
+                    *b += 0.5 * n1;
                 }
             }
         }
@@ -338,24 +432,60 @@ fn column_product<'a, T: 'a>(
     }
 }
 
-/// The coarse nodes (index, weight) a fine node index interpolates from.
-fn parents(i: usize) -> impl Iterator<Item = (usize, f64)> {
-    let (a, b) = if i % 2 == 0 { ((i / 2, 1.0), None) } else { ((i / 2, 0.5), Some((i / 2 + 1, 0.5))) };
-    std::iter::once(a).chain(b)
+/// kc += P^T K P for the interpolation entries (fine dof, coarse dof, weight) of one fine cell.
+fn accumulate(kc: &mut Mat8, k: &Mat8, entries: &[(usize, usize, f64)]) {
+    // kp = K P (8 x 8), then kc += P^T kp.
+    let mut kp = [[0.0f64; 8]; 8];
+    for &(fi, ci, w) in entries {
+        for (kprow, krow) in kp.iter_mut().zip(k) {
+            if let (Some(out), Some(kv)) = (kprow.get_mut(ci), krow.get(fi)) {
+                *out += kv * w;
+            }
+        }
+    }
+    for &(fi, ci, w) in entries {
+        if let (Some(kcrow), Some(kprow)) = (kc.get_mut(ci), kp.get(fi)) {
+            for (out, v) in kcrow.iter_mut().zip(kprow) {
+                *out += w * v;
+            }
+        }
+    }
 }
 
 /// A banded Cholesky factor of a level's assembled matrix (fixed DOFs as identity rows).
+///
+/// Row `i` keeps its `b + 1` entries for columns `i - b ..= i` in column order, so the entry for
+/// column `j` sits at `i * (b + 1) + (j + b - i)` and the diagonal is the last slot of the row.
+/// The inner loops of the factorisation and of both solves are then dot products and axpys over
+/// contiguous slices, which cost a fraction of the indexed loops they replace (fuel is metered
+/// per WebAssembly operation).
 pub struct Banded {
     n: usize,
     b: usize,
-    l: Vec<f64>, // row i, offset k = i - j, at i * (b + 1) + k
+    l: Vec<f64>,
+}
+
+/// sum of a[k] * b[k], four running sums.
+#[inline]
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    let mut acc = [0.0f64; 4];
+    let (ca, cb) = (a.chunks_exact(4), b.chunks_exact(4));
+    let (ra, rb) = (ca.remainder(), cb.remainder());
+    for (x, y) in ca.zip(cb) {
+        for ((s, p), q) in acc.iter_mut().zip(x).zip(y) {
+            *s += p * q;
+        }
+    }
+    let tail: f64 = ra.iter().zip(rb).map(|(p, q)| p * q).sum();
+    (acc[0] + acc[1]) + (acc[2] + acc[3]) + tail
 }
 
 impl Banded {
     pub fn factor(level: &Level) -> Banded {
         let n = level.ndof();
         let b = 2 * (level.ny + 1) + 3;
-        let mut a = vec![0.0; n * (b + 1)];
+        let w = b + 1;
+        let mut a = vec![0.0; n * w];
         let mut e = 0;
         for ex in 0..level.nx {
             for ey in 0..level.ny {
@@ -365,7 +495,7 @@ impl Banded {
                     for (v, j) in row.iter().zip(dofs) {
                         let fixed = level.fixed.get(i).copied().unwrap_or(true) || level.fixed.get(j).copied().unwrap_or(true);
                         if j <= i && !fixed && i - j <= b
-                            && let Some(slot) = a.get_mut(i * (b + 1) + (i - j))
+                            && let Some(slot) = a.get_mut(i * w + (j + b - i))
                         {
                             *slot += v;
                         }
@@ -375,57 +505,72 @@ impl Banded {
             }
         }
         for (i, fixed) in level.fixed.iter().enumerate() {
-            if *fixed && let Some(slot) = a.get_mut(i * (b + 1)) {
+            if *fixed && let Some(slot) = a.get_mut(i * w + b) {
                 *slot = 1.0;
             }
         }
-        // In-place LL^T within the band.
-        let at = |v: &Vec<f64>, i: usize, j: usize| if i >= j && i - j <= b { v.get(i * (b + 1) + (i - j)).copied().unwrap_or(0.0) } else { 0.0 };
+        // In-place LL^T within the band, row by row. Row i, column j < i:
+        // L[i][j] = (A[i][j] - sum_{m in lo..j} L[i][m] L[j][m]) / L[j][j], with lo = max(i - b, 0).
         for i in 0..n {
             let lo = i.saturating_sub(b);
-            for j in lo..=i {
-                let mut s = at(&a, i, j);
-                for m in lo.max(j.saturating_sub(b))..j {
-                    s -= at(&a, i, m) * at(&a, j, m);
+            let (before, rest) = a.split_at_mut(i * w);
+            let Some(row_i) = rest.get_mut(..w) else { break };
+            let off_i = lo + b - i;
+            for j in lo..i {
+                let len = j - lo;
+                let Some(row_j) = before.get(j * w..(j + 1) * w) else { continue };
+                let (Some(li), Some(lj)) = (row_i.get(off_i..off_i + len), row_j.get(lo + b - j..lo + b - j + len)) else { continue };
+                let s = row_i.get(j + b - i).copied().unwrap_or(0.0) - dot(li, lj);
+                let d = row_j.get(b).copied().unwrap_or(0.0);
+                if let Some(slot) = row_i.get_mut(j + b - i) {
+                    *slot = if d != 0.0 { s / d } else { 0.0 };
                 }
-                let value = if i == j {
-                    if s.is_finite() && s > 0.0 { s.sqrt() } else { 1.0 }
-                } else {
-                    let d = at(&a, j, j);
-                    if d != 0.0 { s / d } else { 0.0 }
-                };
-                if let Some(slot) = a.get_mut(i * (b + 1) + (i - j)) {
-                    *slot = value;
-                }
+            }
+            let len = i - lo;
+            let sq = row_i.get(off_i..off_i + len).map_or(0.0, |r| dot(r, r));
+            let s = row_i.get(b).copied().unwrap_or(0.0) - sq;
+            if let Some(slot) = row_i.get_mut(b) {
+                *slot = if s.is_finite() && s > 0.0 { s.sqrt() } else { 1.0 };
             }
         }
         Banded { n, b, l: a }
     }
 
-    fn get(&self, i: usize, j: usize) -> f64 {
-        if i >= j && i - j <= self.b { self.l.get(i * (self.b + 1) + (i - j)).copied().unwrap_or(0.0) } else { 0.0 }
-    }
-
     fn solve(&self, rhs: &[f64]) -> Vec<f64> {
+        let (n, b) = (self.n, self.b);
+        let w = b + 1;
         let mut y = rhs.to_vec();
-        for i in 0..self.n {
-            let mut s = y.get(i).copied().unwrap_or(0.0);
-            for j in i.saturating_sub(self.b)..i {
-                s -= self.get(i, j) * y.get(j).copied().unwrap_or(0.0);
-            }
-            let d = self.get(i, i);
+        // L y = rhs.
+        for i in 0..n {
+            let lo = i.saturating_sub(b);
+            let Some(row) = self.l.get(i * w..(i + 1) * w) else { break };
+            let off = lo + b - i;
+            let s = match (row.get(off..off + (i - lo)), y.get(lo..i)) {
+                (Some(l), Some(prev)) => dot(l, prev),
+                _ => 0.0,
+            };
+            let d = row.get(b).copied().unwrap_or(0.0);
             if let Some(slot) = y.get_mut(i) {
-                *slot = if d != 0.0 { s / d } else { 0.0 };
+                *slot = if d != 0.0 { (*slot - s) / d } else { 0.0 };
             }
         }
-        for i in (0..self.n).rev() {
-            let mut s = y.get(i).copied().unwrap_or(0.0);
-            for j in i + 1..(i + self.b + 1).min(self.n) {
-                s -= self.get(j, i) * y.get(j).copied().unwrap_or(0.0);
-            }
-            let d = self.get(i, i);
-            if let Some(slot) = y.get_mut(i) {
-                *slot = if d != 0.0 { s / d } else { 0.0 };
+        // L^T x = y, a column at a time: once x[i] is known, take its share out of the earlier rows.
+        for i in (0..n).rev() {
+            let lo = i.saturating_sub(b);
+            let Some(row) = self.l.get(i * w..(i + 1) * w) else { break };
+            let d = row.get(b).copied().unwrap_or(0.0);
+            let xi = match y.get_mut(i) {
+                Some(slot) => {
+                    *slot = if d != 0.0 { *slot / d } else { 0.0 };
+                    *slot
+                }
+                None => 0.0,
+            };
+            let off = lo + b - i;
+            if let (Some(l), Some(prev)) = (row.get(off..off + (i - lo)), y.get_mut(lo..i)) {
+                for (v, lv) in prev.iter_mut().zip(l) {
+                    *v -= lv * xi;
+                }
             }
         }
         y
@@ -457,9 +602,30 @@ enum Coarsest {
     Sweeps(usize),
 }
 
+/// Whether a grid of `nx` x `ny` cells ends in a direct (banded Cholesky) coarsest solve with the
+/// default settings, worked out from the sizes alone. A grid that does not (too tall to halve far
+/// enough) falls back to many smoothing sweeps, which is slow and weak.
+pub fn coarsest_is_direct_for(nx: usize, ny: usize) -> bool {
+    let settings = Settings::default();
+    let (mut x, mut y, mut depth) = (nx, ny, 1);
+    let cost = |x: usize, y: usize| 2 * (x + 1) * (2 * (y + 1) + 3).pow(2) * (y + 1);
+    loop {
+        if cost(x, y) <= settings.coarse_budget || depth >= settings.max_levels || x % 2 != 0 || y % 2 != 0 || x < 4 || y < 4 {
+            break;
+        }
+        x /= 2;
+        y /= 2;
+        depth += 1;
+    }
+    cost(x, y) <= settings.coarse_budget.saturating_mul(16)
+}
+
 /// The multigrid preconditioner: the levels, their inverse diagonals and the coarsest solver.
 pub struct Hierarchy {
     pub levels: Vec<Level>,
+    /// WebAssembly SIMD copies of the coarse levels' matrices (empty for the fine level).
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    packed: Vec<Vec<simd::Packed>>,
     inv_diag: Vec<Vec<f64>>,
     coarsest: Coarsest,
     settings: Settings,
@@ -480,10 +646,25 @@ impl Hierarchy {
         }
         let inv_diag = levels.iter().map(|l| l.diagonal().iter().map(|d| 1.0 / d).collect()).collect();
         let coarsest = match levels.last() {
-            Some(l) if l.ndof() * (2 * (l.ny + 1) + 3).pow(2) <= settings.coarse_budget.saturating_mul(4) => Coarsest::Direct(Box::new(Banded::factor(l))),
+            Some(l) if l.ndof() * (2 * (l.ny + 1) + 3).pow(2) <= settings.coarse_budget.saturating_mul(16) => Coarsest::Direct(Box::new(Banded::factor(l))),
             _ => Coarsest::Sweeps(30),
         };
-        Hierarchy { levels, inv_diag, coarsest, settings }
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        let packed = levels
+            .iter()
+            .map(|l| match &l.cells {
+                Cells::Full(all) => all.iter().map(simd::pack).collect(),
+                Cells::Scaled { .. } => Vec::new(),
+            })
+            .collect();
+        Hierarchy {
+            levels,
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            packed,
+            inv_diag,
+            coarsest,
+            settings,
+        }
     }
 
     pub fn depth(&self) -> usize {
@@ -519,12 +700,33 @@ impl Hierarchy {
         self.vcycle(0, r)
     }
 
-    fn smooth(&self, l: usize, r: &[f64], z: &mut [f64], sweeps: usize, scratch: &mut [f64]) {
-        let (Some(level), Some(inv)) = (self.levels.get(l), self.inv_diag.get(l)) else { return };
-        for _ in 0..sweeps {
-            level.apply(z, scratch);
+    /// y = K u on level `l`, through the SIMD copy of the matrices where there is one.
+    fn apply_level(&self, l: usize, u: &[f64], y: &mut [f64]) {
+        let Some(level) = self.levels.get(l) else { return };
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        if let Some(packed) = self.packed.get(l).filter(|p| !p.is_empty()) {
+            level.apply_packed(packed, u, y);
+            return;
+        }
+        level.apply(u, y);
+    }
+
+    /// `sweeps` damped Jacobi sweeps on z. From a zero start (`from_zero`) the first sweep is just
+    /// omega D^-1 r, so it needs no product with K.
+    fn smooth(&self, l: usize, r: &[f64], z: &mut [f64], sweeps: usize, scratch: &mut [f64], from_zero: bool) {
+        let Some(inv) = self.inv_diag.get(l) else { return };
+        let omega = self.settings.omega;
+        let mut left = sweeps;
+        if from_zero && left > 0 {
+            for ((zi, ri), di) in z.iter_mut().zip(r).zip(inv) {
+                *zi = omega * di * ri;
+            }
+            left -= 1;
+        }
+        for _ in 0..left {
+            self.apply_level(l, z, scratch);
             for ((zi, (ri, ki)), di) in z.iter_mut().zip(r.iter().zip(scratch.iter())).zip(inv) {
-                *zi += self.settings.omega * di * (ri - ki);
+                *zi += omega * di * (ri - ki);
             }
         }
     }
@@ -537,19 +739,19 @@ impl Hierarchy {
             match &self.coarsest {
                 Coarsest::Direct(chol) => return chol.solve(r),
                 Coarsest::Sweeps(s) => {
-                    self.smooth(l, r, &mut z, *s, &mut scratch);
+                    self.smooth(l, r, &mut z, *s, &mut scratch, true);
                     return z;
                 }
             }
         }
         let (Some(level), Some(coarse)) = (self.levels.get(l), self.levels.get(l + 1)) else { return z };
-        self.smooth(l, r, &mut z, self.settings.sweeps, &mut scratch);
-        level.apply(&z, &mut scratch);
+        self.smooth(l, r, &mut z, self.settings.sweeps, &mut scratch, true);
+        self.apply_level(l, &z, &mut scratch);
         let residual: Vec<f64> = r.iter().zip(&scratch).map(|(a, b)| a - b).collect();
         let rc = level.restrict(&residual, &coarse.fixed);
         let zc = self.vcycle(l + 1, &rc);
         level.prolong_add(&zc, &mut z);
-        self.smooth(l, r, &mut z, self.settings.sweeps, &mut scratch);
+        self.smooth(l, r, &mut z, self.settings.sweeps, &mut scratch, false);
         z
     }
 }

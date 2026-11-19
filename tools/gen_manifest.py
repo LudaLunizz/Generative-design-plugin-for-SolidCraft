@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
@@ -74,7 +74,8 @@ manifest = {
                  "force_n": {"type": "number", "title": "Force", "unit": "N", "default": 500, "minimum": 0.001, "maximum": 1000000000,
                              "description": "Used for the deflection estimate only; the shape does not depend on it"},
                  "volume_share": {"type": "number", "title": "Material share", "default": 0.4, "minimum": 0.1, "maximum": 0.9},
-                 "cells": {"type": "integer", "title": "Cells across the width", "default": 80, "minimum": 20, "maximum": 120},
+                 "cells": {"type": "integer", "title": "Cells across the width", "default": 80, "minimum": 20, "maximum": 240,
+                           "description": "More cells give finer detail and take longer; rounded to a multiple of 4; the whole grid is capped at 30000 cells"},
                  "iterations": {"type": "integer", "title": "Design iterations", "default": 60, "minimum": 10, "maximum": 150},
                  "filter_radius": {"type": "number", "title": "Smallest member (cells)", "default": 2, "minimum": 1, "maximum": 4},
                  "name": {"type": "string", "title": "Body name", "default": "Optimised plate"}}}},

@@ -709,9 +709,12 @@ fn stress_check<H: Host>(host: &mut H, library: &Library, p: StressParams) -> Re
 // ---------------------------------------------------------------------------------------------
 // optimise-plate: topology-optimise a flat plate and draw the result as a sketch + extrude (edit)
 
-/// Most cells the optimiser gets inside the plugin: 120 x 60 x 100 iterations takes about 3 s in
-/// SolidCraft, so this stays well inside the 30 s deadline and the fuel budget.
-pub const MAX_PLATE_CELLS: usize = 8_000;
+/// Most cells the optimiser gets inside the plugin (240 x 120): measured in SolidCraft after speed
+/// round 2, 100 iterations take about 4 s and stay well inside the 1e11 fuel and the 30 s deadline.
+pub const MAX_PLATE_CELLS: usize = 30_000;
+/// Cells x design iterations one call may do: 240 x 120 x 100 uses most of the 1e11 fuel, and 120
+/// iterations at that size run out, so this leaves about a sixth to spare for other shapes.
+pub const MAX_PLATE_WORK: usize = 2_400_000;
 const MAX_PLATE_LOOPS: usize = 400;
 const MAX_PLATE_POINTS: usize = 20_000;
 
@@ -758,13 +761,20 @@ fn in_range<E>(field: &str, v: f64, lo: f64, hi: f64) -> Result<f64, Failure<E>>
 }
 
 /// The grid for a plate: square cells across the width (at most `cells` of them, fewer so that
-/// the whole grid stays within [`MAX_PLATE_CELLS`]); the height is rounded to whole cells.
+/// the whole grid stays within [`MAX_PLATE_CELLS`]). Both counts are rounded to a multiple of 4
+/// (8 or 16 for tall grids), so the multigrid can halve the grid far enough for a cheap direct
+/// solve at the bottom; the height follows to whole cells.
 fn plate_grid(width: f64, height: f64, cells: usize) -> (usize, usize, f64) {
     let ratio = height / width;
     let max_nx = (MAX_PLATE_CELLS as f64 / ratio).sqrt().floor() as usize;
-    let nx = cells.min(max_nx.max(1));
+    let nx0 = cells.min(max_nx.max(1));
+    let unit = |n: f64| if n <= 160.0 { 4.0 } else if n <= 320.0 { 8.0 } else { 16.0 };
+    let snap = |v: f64, u: f64| ((u * (v / u).round()) as usize).max(u as usize);
+    let rows = height / (width / nx0 as f64);
+    let u = unit(rows.max(nx0 as f64));
+    let nx = snap(nx0 as f64, u);
     let cell = width / nx as f64;
-    (nx, (height / cell).round() as usize, cell)
+    (nx, snap(height / cell, u), cell)
 }
 
 fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> Result<Value, Failure<H::Error>> {
@@ -777,8 +787,8 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
     let force = in_range("force_n", p.force_n, 0.001, 1e9)?;
     let share = in_range("volume_share", p.volume_share, 0.1, 0.9)?;
     let radius = in_range("filter_radius", p.filter_radius, 1.0, 4.0)?;
-    if !(20..=120).contains(&p.cells) {
-        return Err(Failure::input("cells", "expected 20 to 120"));
+    if !(20..=240).contains(&p.cells) {
+        return Err(Failure::input("cells", "expected 20 to 240"));
     }
     if !(10..=150).contains(&p.iterations) {
         return Err(Failure::input("iterations", "expected 10 to 150"));
@@ -805,8 +815,17 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
     if nx < 8 {
         return Err(Failure::input("height_mm", "too tall and narrow for the grid: keep the height under about 150 times the width"));
     }
-    if ny < 4 {
+    if height / cell < 3.5 {
         return Err(Failure::input("height_mm", "too thin for the grid: the plate needs at least 4 cells across its height (raise cells, or make it taller)"));
+    }
+    if !crate::mg2d::coarsest_is_direct_for(nx, ny) {
+        return Err(Failure::input("height_mm", "too tall and narrow for the solver: make the plate wider compared with its height, or lower the cells"));
+    }
+    if nx * ny * p.iterations > MAX_PLATE_WORK {
+        return Err(Failure::input(
+            "iterations",
+            format!("{nx} x {ny} cells times {} iterations is more work than SolidCraft allows a plugin ({MAX_PLATE_WORK} cell-iterations at most): lower the iterations or the cells", p.iterations),
+        ));
     }
     let height_used = ny as f64 * cell;
 
@@ -824,7 +843,9 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
         load,
         max_iterations: p.iterations,
         change_tol: 0.01,
-        cg_tol: 1e-6,
+        // 1e-4 gives the same design as 1e-6 (mean density difference 2e-5, no cell flips at
+        // 160 x 80) with half the solver steps; measured in speed round 2.
+        cg_tol: 1e-4,
         cg_max: 20_000,
         solver: Solver::Multigrid,
         beta_final: 0.0,
@@ -910,6 +931,9 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
     host.progress(1.0, "Done");
 
     let mut warnings: Vec<String> = Vec::new();
+    if (height_used - height).abs() > 0.03 * height {
+        warnings.push(format!("The grid has whole cells in steps of 4, so the plate is {:.1} mm high instead of {height:.1} mm; more cells follow the height more closely.", height_used));
+    }
     if nx < p.cells {
         warnings.push(format!("Used {nx} cells across (not {}) so that the grid stays at {MAX_PLATE_CELLS} cells.", p.cells));
     }
@@ -1373,6 +1397,7 @@ mod tests {
             json!({"volume_share": 0.99}),
             json!({"cells": 5}),
             json!({"cells": 5000}),
+            json!({"cells": 241}),
             json!({"iterations": 0}),
             json!({"iterations": 100000}),
             json!({"filter_radius": 0.1}),
@@ -1414,14 +1439,18 @@ mod tests {
 
     #[test]
     fn plate_grid_keeps_the_cell_count_down() {
-        for (w, h, c) in [(120.0, 120.0, 120), (10_000.0, 10_000.0, 120), (200.0, 100.0, 120), (10_000.0, 1.0, 20)] {
+        for (w, h, c) in [(120.0, 120.0, 240), (10_000.0, 10_000.0, 240), (200.0, 100.0, 240), (10_000.0, 1.0, 20), (123.4, 77.7, 97)] {
             let (nx, ny, cell) = plate_grid(w, h, c);
             assert!(nx >= 1 && nx <= c);
-            assert!(nx * ny <= MAX_PLATE_CELLS + nx, "{w}x{h}: {nx} x {ny}");
+            assert!(nx % 4 == 0 && ny % 4 == 0, "{w}x{h}: {nx} x {ny}");
+            assert!(nx * ny <= MAX_PLATE_CELLS + MAX_PLATE_CELLS / 10, "{w}x{h}: {nx} x {ny}");
             assert!(cell > 0.0 && cell.is_finite());
         }
         assert_eq!(plate_grid(200.0, 100.0, 80), (80, 40, 2.5));
-        assert!(plate_grid(1.0, 10_000.0, 120).0 < 8, "a needle is refused by the entry");
+        assert!(crate::mg2d::coarsest_is_direct_for(80, 40) && crate::mg2d::coarsest_is_direct_for(240, 120));
+        assert!(!crate::mg2d::coarsest_is_direct_for(100, 3000));
+        let (nx, ny, _) = plate_grid(1.0, 10_000.0, 120);
+        assert!(ny > 2000 || !crate::mg2d::coarsest_is_direct_for(nx, ny), "a needle is refused by the entry: {nx} x {ny}");
     }
 
     #[test]

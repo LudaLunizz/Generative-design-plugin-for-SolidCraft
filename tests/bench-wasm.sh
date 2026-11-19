@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Times the solver-benchmark entry inside the installed SolidCraft (WebAssembly, headless CLI)
 # and the same runs natively, and finds the fuel one run needs by bisection.
-# Usage: tests/bench-wasm.sh   (after ./build.sh)
+# Usage: tests/bench-wasm.sh   (after ./build.sh); CASES="nx ny its solver;..." CG_TOL=1e-4 PARTS=1
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root=$(pwd)
@@ -15,7 +15,7 @@ cd "$work"
 # Copy the package with a given fuel limit and print its approval hash.
 package() { # fuel
   rm -rf gen-design-engine && cp -r "$pkg" gen-design-engine
-  jq --argjson f "$1" '.runtime.limits.fuel = $f' "$pkg/plugin.json" > gen-design-engine/plugin.json
+  jq -c --argjson f "$1" '.runtime.limits.fuel = $f' "$pkg/plugin.json" > gen-design-engine/plugin.json
   echo '[{"command":"plugin.inspect","params":{"path":"gen-design-engine"}}]' > i.json
   solidcraft-cli run i.json --results --json-out i.out --quiet
   jq -r '.[0].approval' i.out
@@ -23,8 +23,8 @@ package() { # fuel
 
 # Run one benchmark; print "ms<TAB>status<TAB>result-json".
 run() { # approval nx ny iterations [solver]
-  jq -nc --arg a "$1" --argjson nx "$2" --argjson ny "$3" --argjson it "$4" --arg s "${5:-multigrid}" \
-    '[{command:"plugin.run",params:{path:"gen-design-engine",approval:$a,entry:"solver-benchmark",params:{nx:$nx,ny:$ny,iterations:$it,solver:$s,picture:false}}}]' > r.json
+  jq -nc --arg a "$1" --argjson nx "$2" --argjson ny "$3" --argjson it "$4" --arg s "${5:-multigrid}" --argjson tol "${CG_TOL:-1e-6}" \
+    '[{command:"plugin.run",params:{path:"gen-design-engine",approval:$a,entry:"solver-benchmark",params:{nx:$nx,ny:$ny,iterations:$it,solver:$s,cg_tol:$tol,picture:false}}}]' > r.json
   if solidcraft-cli run r.json --results --timings --json-out r.out --quiet 2> r.err; then
     printf '%s\t%s\t%s\n' "$(jq '.timings[0].ms' r.out)" ok "$(jq -c '.results[0].result // .results[0]' r.out)"
   else

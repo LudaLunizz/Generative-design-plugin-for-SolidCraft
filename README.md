@@ -14,7 +14,7 @@ for flat parts, and a **plate optimiser** that designs a lightweight plate and d
 and an extrude. Next to the plugin there are three command-line tools (3D stress check,
 printed-part stress check, beam optimiser; see below).
 
-Version 0.4.1 is tested with **SolidCraft 0.44.1**
+Version 0.4.2 is tested with **SolidCraft 0.44.1**
 (`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
@@ -54,8 +54,12 @@ draw (a test checks this). From MCP or a script: `plugin.run` with the entry nam
 ### Plate optimiser
 
 - Input: width, height, thickness, material, load case, force, material share (0.1 to 0.9), grid
-  cells across the width (20 to 120; the whole grid is capped at 8000 cells so a run finishes
-  within SolidCraft's 30 s limit), design iterations and the smallest member (in cells).
+  cells across the width (20 to 240), design iterations (10 to 150) and the smallest member (in
+  cells). The grid is capped at 30,000 cells, and cells times iterations at 2.4 million, so a run
+  stays inside SolidCraft's 1e11 fuel and 30 s (240 x 120 cells take about 80 iterations, 4.8 s;
+  160 x 80 cells take 150 iterations, 3 s). The cell counts are rounded to a multiple of 4 (8 or
+  16 for tall plates) so the multigrid solver can coarsen the grid; the reply and a warning give
+  the height actually used. Plates that are too tall and narrow for that are refused.
 - The shape comes from 2D SIMP optimisation (density filter, optimality criteria, multigrid
   solver). Cells above 0.5 density are material; only material joined to the fixed edge is kept;
   diagonal-only contacts are closed; the staircase boundary is smoothed (real corners are kept) and
