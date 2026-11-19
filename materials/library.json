@@ -26,10 +26,25 @@
       "kind": "public_reference",
       "reference": "ASTM B348/B348M, titanium and titanium alloy bars and billets"
     },
-    "generic-print": {
-      "title": "Illustrative mid-range values for 3D-printed parts; real parts vary with the filament or powder, print direction and settings",
-      "kind": "illustrative",
-      "reference": "Replace with the values from your filament or powder datasheet, or from your own test prints"
+    "prusament-pla": {
+      "title": "Prusament PLA technical data sheet v1.1 (27 Jul 2022): printed ISO 527 specimens, 0.20 mm layers, 215 C, 100% rectilinear infill, flat",
+      "kind": "public_reference",
+      "reference": "Prusa Research, Prusament PLA TDS v1.1 (density ISO 1183); Z-axis strength from the 2018 v1.0 sheet. One brand; yield strength"
+    },
+    "prusament-petg": {
+      "title": "Prusament PETG technical data sheet v1.0 (24 Jan 2020): printed specimens, 0.20 mm layers, 260 C, 100% infill",
+      "kind": "public_reference",
+      "reference": "Prusa Research, Prusament PETG TDS v1.0 (density ISO 1183). One brand; yield strength"
+    },
+    "bambu-abs": {
+      "title": "Bambu Lab ABS technical data sheet V2.0: printed specimens, 260 C, 100% infill, annealed and dried 80 C 12 h before testing",
+      "kind": "public_reference",
+      "reference": "Bambu Lab ABS TDS V2.0 (density ISO 1183), read from a reseller copy. One brand; annealing probably raises the values"
+    },
+    "eos-pa2200": {
+      "title": "EOS PA 2200 material data sheet: laser-sintered specimens, dry, ISO 527",
+      "kind": "public_reference",
+      "reference": "EOS GmbH, Material data sheet PA 2200 (part density 930 kg/m3). X/Y values; Z strength is 42 MPa"
     }
   },
   "materials": [
@@ -39,7 +54,7 @@
       "color": "#b9bdc3",
       "family": "metal",
       "designation": "Aluminium alloy 6061 (EN AW-6061), temper T6",
-      "notes": "General machining alloy. Strength values are typical, not minimums.",
+      "notes": "General machining alloy. Strength values are ASM typical values, checked against the ASM data sheet (19 Nov 2026), not guaranteed minimums; the Aluminum Association marks typical values not for design, and the specified minimums are lower (about 240 MPa yield, 260 MPa tensile, by product form). Plate is usually T651 with the same properties. The Poisson ratio is an ASM estimate.",
       "properties": [
         {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 2700.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 68.9e9, "poisson_ratio": 0.33}}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
@@ -57,7 +72,7 @@
       "color": "#aeb3ba",
       "family": "metal",
       "designation": "Aluminium alloy 7075 (EN AW-7075), temper T6",
-      "notes": "High-strength alloy. Strength values are typical, not minimums.",
+      "notes": "High-strength alloy. Strength values are ASM typical values, checked against the ASM data sheet (19 Nov 2026), not guaranteed minimums. The Poisson ratio is an ASM estimate.",
       "properties": [
         {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 2810.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 71.7e9, "poisson_ratio": 0.33}}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
@@ -65,7 +80,7 @@
         {"source_id": "asm-typical", "data": {"kind": "tensile_strength", "pa": 572e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "shear_strength", "pa": 331e6}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [130.0, 130.0, 130.0], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
-        {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [23.4e-6, 23.4e-6, 23.4e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
+        {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [23.6e-6, 23.6e-6, 23.6e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 960.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}}
       ]
     },
@@ -75,7 +90,7 @@
       "color": "#7d8187",
       "family": "metal",
       "designation": "Structural steel S235JR (EN 10025-2), hot rolled, thickness up to 16 mm",
-      "notes": "Yield drops for thicker sections (EN 10025-2).",
+      "notes": "EN 10025-2 minimums: yield 235 MPa up to 16 mm thick (lower for thicker sections: 225 MPa at 16-40 mm); tensile 360 MPa is the lowest of the 360-510 MPa range for 3-100 mm. Eurocode 3 design values differ slightly by thickness band.",
       "properties": [
         {"source_id": "eurocode-steel", "data": {"kind": "density", "kg_m3": 7850.0}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
         {"source_id": "eurocode-steel", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 210e9, "poisson_ratio": 0.3}}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
@@ -90,7 +105,7 @@
       "color": "#73777d",
       "family": "metal",
       "designation": "Structural steel S355JR (EN 10025-2), hot rolled, thickness up to 16 mm",
-      "notes": "Yield drops for thicker sections (EN 10025-2).",
+      "notes": "EN 10025-2 minimums: yield 355 MPa up to 16 mm thick (345 MPa at 16-40 mm, 335 MPa at 40-63 mm); tensile 470 MPa is the lowest of the 470-630 MPa range for 3-100 mm. Eurocode 3 (EN 1993-1-1 table 3.1) uses fu = 490 MPa up to 40 mm, so this library is the more conservative product-standard value.",
       "properties": [
         {"source_id": "eurocode-steel", "data": {"kind": "density", "kg_m3": 7850.0}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
         {"source_id": "eurocode-steel", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 210e9, "poisson_ratio": 0.3}}, "conditions": {"temperature_k": 293.15, "state": "hot rolled"}},
@@ -105,7 +120,7 @@
       "color": "#c4c7cb",
       "family": "metal",
       "designation": "Austenitic stainless steel 304 (1.4301), annealed",
-      "notes": "Strengths are ASTM A240 minimums; cold-worked stock is stronger.",
+      "notes": "Strengths are ASTM A240 minimums; cold-worked stock is stronger. Physical values are ASM (density 8000, E 193 GPa); EN 10088 sheets for 1.4301 use density about 7900 and E 200 GPa, and 1.4301 is only roughly 304.",
       "properties": [
         {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 8000.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
         {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 193e9, "poisson_ratio": 0.29}}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
@@ -122,7 +137,7 @@
       "color": "#bfc3c8",
       "family": "metal",
       "designation": "Austenitic stainless steel 316L (1.4404), annealed",
-      "notes": "Strengths are ASTM A240 minimums.",
+      "notes": "Strengths are ASTM A240 minimums. Density, E and specific heat are on the ASM 316L sheet; Poisson ratio, conductivity and expansion are widely quoted typical values that were not on that sheet. EN 1.4404 is only roughly 316L (EN sheets give E 200 GPa, expansion about 16.0e-6).",
       "properties": [
         {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 8000.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
         {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 193e9, "poisson_ratio": 0.3}}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
@@ -139,7 +154,7 @@
       "color": "#9a9ca3",
       "family": "metal",
       "designation": "Titanium alloy Ti-6Al-4V (Grade 5), annealed",
-      "notes": "Strengths are ASTM B348 Grade 5 minimums for annealed bar.",
+      "notes": "Strengths are ASTM B348 Grade 5 minimums for annealed bar (828 / 895 MPa); the ASM typical values are higher (about 880 / 950 MPa). Physical values are ASM typical values, checked against the ASM data sheet.",
       "properties": [
         {"source_id": "asm-typical", "data": {"kind": "density", "kg_m3": 4430.0}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
         {"source_id": "asm-typical", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 113.8e9, "poisson_ratio": 0.342}}, "conditions": {"temperature_k": 293.15, "state": "annealed"}},
@@ -156,11 +171,11 @@
       "color": "#e8e4d8",
       "family": "polymer",
       "designation": "Polylactic acid, FDM printed, loaded along the layers",
-      "notes": "Illustrative values. Across the layers (Z) a printed part is often much weaker. Creeps under steady load, softens around 55-60 C.",
+      "notes": "Prusament PLA datasheet values (printed specimens, 100% infill, flat): across-layer (Z) strength was 37.6 MPa in the 2018 datasheet and is lower than the in-plane value. Brand, print settings and moisture change these numbers; use your own filament's datasheet or test prints. Poisson ratio is a generic estimate, not from the datasheet. Creeps under steady load, softens around 55-60 C.",
       "properties": [
-        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1240.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
-        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 3.0e9, "poisson_ratio": 0.36}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
-        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 50e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+        {"source_id": "prusament-pla", "data": {"kind": "density", "kg_m3": 1240.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "prusament-pla", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.3e9, "poisson_ratio": 0.36}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
+        {"source_id": "prusament-pla", "data": {"kind": "tensile_strength", "pa": 51e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
       ]
     },
     {
@@ -169,11 +184,11 @@
       "color": "#9fc7d9",
       "family": "polymer",
       "designation": "Glycol-modified PET, FDM printed, loaded along the layers",
-      "notes": "Illustrative values. Across the layers (Z) a printed part is often much weaker.",
+      "notes": "Prusament PETG datasheet values (printed specimens, 100% infill). Across the layers (Z) the datasheet gives only 30 MPa. Brand and print settings change these numbers. Poisson ratio is a generic estimate, not from the datasheet.",
       "properties": [
-        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1270.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
-        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.0e9, "poisson_ratio": 0.38}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
-        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 45e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+        {"source_id": "prusament-petg", "data": {"kind": "density", "kg_m3": 1270.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "prusament-petg", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 1.5e9, "poisson_ratio": 0.38}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
+        {"source_id": "prusament-petg", "data": {"kind": "tensile_strength", "pa": 47e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
       ]
     },
     {
@@ -182,11 +197,11 @@
       "color": "#d8d2c6",
       "family": "polymer",
       "designation": "Acrylonitrile butadiene styrene, FDM printed, loaded along the layers",
-      "notes": "Illustrative values. Across the layers (Z) a printed part is often much weaker.",
+      "notes": "Bambu Lab ABS datasheet values (printed specimens, annealed and dried before testing, which probably makes them stronger than ordinary parts). Modulus is the across-layers value (2.96 GPa); the in-plane datasheet value is 3.8 GPa. Across the layers the tensile strength is 32 MPa. Poisson ratio is a generic estimate, not from the datasheet.",
       "properties": [
-        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1040.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
-        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.0e9, "poisson_ratio": 0.35}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
-        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 35e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+        {"source_id": "bambu-abs", "data": {"kind": "density", "kg_m3": 1050.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "bambu-abs", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.96e9, "poisson_ratio": 0.35}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
+        {"source_id": "bambu-abs", "data": {"kind": "tensile_strength", "pa": 41e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
       ]
     },
     {
@@ -195,11 +210,11 @@
       "color": "#e6e6e2",
       "family": "polymer",
       "designation": "Polyamide 12, selective laser sintered",
-      "notes": "Illustrative values. SLS parts are closer to the same strength in every direction than FDM parts.",
+      "notes": "EOS PA 2200 datasheet values (laser sintered, dry; 930 kg/m3 is the part density, not the powder). Strength across the layers (Z) is 42 MPa. Poisson ratio is a generic estimate, not from the datasheet.",
       "properties": [
-        {"source_id": "generic-print", "data": {"kind": "density", "kg_m3": 1010.0}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}},
-        {"source_id": "generic-print", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 1.7e9, "poisson_ratio": 0.39}}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}},
-        {"source_id": "generic-print", "data": {"kind": "tensile_strength", "pa": 48e6}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}}
+        {"source_id": "eos-pa2200", "data": {"kind": "density", "kg_m3": 930.0}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}},
+        {"source_id": "eos-pa2200", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 1.65e9, "poisson_ratio": 0.39}}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}},
+        {"source_id": "eos-pa2200", "data": {"kind": "tensile_strength", "pa": 48e6}, "conditions": {"temperature_k": 293.15, "state": "SLS printed"}}
       ]
     }
   ]

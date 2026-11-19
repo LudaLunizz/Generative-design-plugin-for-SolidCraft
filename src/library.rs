@@ -441,7 +441,7 @@ mod tests {
         let (a, basis) = lib.find("aluminium-6061-t6").unwrap().strengths().allowable_mpa(2.0).unwrap();
         assert_eq!((a, basis), (138.0, "yield_strength"));
         let (a, basis) = lib.find("pla-printed").unwrap().strengths().allowable_mpa(2.0).unwrap();
-        assert_eq!((a, basis), (25.0, "tensile_strength"));
+        assert_eq!((a, basis), (25.5, "tensile_strength"));
         assert!(Strengths::default().allowable_mpa(f64::NAN).is_none());
     }
 

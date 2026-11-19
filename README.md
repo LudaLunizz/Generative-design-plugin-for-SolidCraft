@@ -1,19 +1,20 @@
 # Generative Design Engine (SolidCraft plugin)
 
 A [SolidCraft](https://github.com/tangency-labs/solidcraft) command plugin (`craft:plugin@0.1.0`,
-capability `commands@0.1`). Version 0.3: an engineering **material library** that becomes
-SolidCraft's own physical material cards, a per-body **material report**, and a **stress check**
-for flat parts. A 2D topology optimiser exists as a benchmark. Next to the plugin there are three
-command-line tools (3D stress check, printed-part stress check, beam optimiser; see below).
+capability `commands@0.1`). Version 0.4: an engineering **material library** that becomes
+SolidCraft's own physical material cards, a per-body **material report**, a **stress check**
+for flat parts, and a **plate optimiser** that designs a lightweight plate and draws it as a sketch
+and an extrude. Next to the plugin there are three command-line tools (3D stress check,
+printed-part stress check, beam optimiser; see below).
 
 Independent project: not made, endorsed or supported by Tangency Labs or the SolidCraft
-maintainers. "SolidCraft" is their name. The plugin is tested with **SolidCraft 0.43.0 and 0.44.1**
-(`tests/cli-test.sh`).
+maintainers. "SolidCraft" is their name. Version 0.4.0 is tested with **SolidCraft 0.44.1**
+(`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
 > check them before anyone relies on them for a design, manufacturing or safety decision. The
-> material values are listed below with their sources, and have **not** yet been checked against
-> the standards themselves.
+> material values are listed below with their sources: they were checked against public data
+> sheets in 0.4.0, but not against the (paywalled) standards themselves.
 
 ## Entries
 
@@ -22,6 +23,7 @@ maintainers. "SolidCraft" is their name. The plugin is tested with **SolidCraft 
 | `gen-design-engine.apply-material` | edit | Creates the chosen library material in the design (once, with its full engineering card) and assigns it to a body (empty = every body; scripts may pass a `bodies` list). One undo step. |
 | `gen-design-engine.material-report` | read | Per body: material, volume, mass, stiffness, yield/tensile strength and the allowable stress at a safety factor. |
 | `gen-design-engine.stress-check` | read | Plane-stress analysis of a flat body: fixed faces, load faces and a force in N; gives peak von Mises stress and where, the safety factor against the material's strength (pass/fail), the largest displacement, and a text heat map. |
+| `gen-design-engine.optimise-plate` | edit | Topology-optimises a flat plate (cantilever or MBB half beam) for stiffness at a chosen material share, then draws the result as a sketch of closed outlines and extrudes it into a new body with the chosen library material. One undo step. Reports mass, outlines, holes and a rough load-point deflection. |
 | `gen-design-engine.materials` | read | Lists the library with its values. Runs no app commands. |
 | `gen-design-engine.solver-benchmark` | read | Runs the 2D SIMP optimiser on a test case and reports the work done (development tool). |
 
@@ -43,6 +45,22 @@ draw (a test checks this). From MCP or a script: `plugin.run` with the entry nam
   thick); peaks at sharp inside corners grow with finer grids (it warns; round the corner, or
   judge by the 99th percentile it also reports). A design check, not a certified analysis.
 
+### Plate optimiser
+
+- Input: width, height, thickness, material, load case, force, material share (0.1 to 0.9), grid
+  cells across the width (20 to 120; the whole grid is capped at 8000 cells so a run finishes
+  within SolidCraft's 30 s limit), design iterations and the smallest member (in cells).
+- The shape comes from 2D SIMP optimisation (density filter, optimality criteria, multigrid
+  solver). Cells above 0.5 density are material; only material joined to the fixed edge is kept;
+  diagonal-only contacts are closed; the staircase boundary is smoothed (real corners are kept) and
+  drawn as closed sketch lines, with holes as inner loops, and extruded.
+- It is checked in SolidCraft: the extruded solid has the same volume as the optimiser's own area,
+  and one undo removes sketch, body and material assignment.
+- **Stiffness only.** Strength, stress concentrations, buckling and manufacturability are not
+  checked. Run `stress-check` on the new body before relying on it. The deflection figure is a
+  rough estimate (a force on one grid node).
+- The force changes the deflection estimate, not the shape: one linear material and one load.
+
 Allowable stress = yield strength / safety factor, or tensile strength / safety factor for
 materials without a yield value (the printed plastics). **This is not a stress analysis**: the
 report says how much stress a material may take, not how much the part gets.
@@ -58,15 +76,30 @@ report says how much stress a material may take, not how much the part gets.
 | `stainless-304` | Stainless steel 304 | ASTM A240 minimum strengths, typical physical values |
 | `stainless-316l` | Stainless steel 316L | ASTM A240 minimum strengths, typical physical values |
 | `titanium-ti6al4v` | Titanium Ti-6Al-4V | ASTM B348 Grade 5 minimum strengths, typical physical values |
-| `pla-printed` | PLA (3D printed, generic) | illustrative |
-| `petg-printed` | PETG (3D printed, generic) | illustrative |
-| `abs-printed` | ABS (3D printed, generic) | illustrative |
-| `pa12-sls` | Nylon PA12 (SLS printed, generic) | illustrative |
+| `pla-printed` | PLA (3D printed, generic) | Prusament PLA data sheet (printed specimens) |
+| `petg-printed` | PETG (3D printed, generic) | Prusament PETG data sheet (printed specimens) |
+| `abs-printed` | ABS (3D printed, generic) | Bambu Lab ABS data sheet (annealed specimens) |
+| `pa12-sls` | Nylon PA12 (SLS printed, generic) | EOS PA 2200 data sheet (laser sintered) |
 
 Every property names its source in the card; SolidCraft shows them as "source review required".
-The values were compiled from standard handbook and standard tables, **not yet checked against
-the documents themselves**; the printed-plastic values are placeholders to be replaced by your
-filament's datasheet or your own test prints. Printed parts are much weaker across the layers.
+**Checked on 19 Nov 2026 (0.4.0):** the metal values against public data sheets (ASM data via
+reseller copies, mill data sheets, Eurocode summaries; the standards themselves are paywalled), and
+the four plastics replaced by manufacturer data sheets of printed specimens. One correction came
+out of it (7075 thermal expansion 23.6, not 23.4). Things to know:
+
+- 6061-T6 and 7075-T6 use ASM *typical* strengths; the guaranteed minimums are lower (6061-T6 about
+  240 MPa yield, 260 MPa tensile). Use a safety factor that covers this, or check your supplier's
+  certificate.
+- S355JR tensile is the EN 10025-2 product minimum (470 MPa); Eurocode 3 designs with 490 MPa.
+  Yield drops for sections thicker than 16 mm.
+- 304 and 316L follow the ASTM/ASM side (density 8000, E 193 GPa); EN 1.4301/1.4404 data sheets
+  use slightly different physical values. For 316L, Poisson ratio, conductivity and expansion are
+  widely quoted typical values that were not on the ASM sheet.
+- Printed plastics are **one brand each** and the Poisson ratios are generic estimates. The ABS
+  sheet's specimens were annealed (stronger than ordinary parts), so its in-plane modulus
+  (3.8 GPa) is not used; the library has the across-layers 2.96 GPa. Across the layers (Z) the
+  datasheets give lower strengths (PLA 38, PETG 30, ABS 32, PA12 42 MPa); the library holds the
+  in-plane values, so a part loaded across its layers is weaker than the card says.
 
 To add or change a material: edit `materials/library.json`, run `./build.sh` (it regenerates
 `plugin.json`, runs every check and packages the zip), then `tests/cli-test.sh`.

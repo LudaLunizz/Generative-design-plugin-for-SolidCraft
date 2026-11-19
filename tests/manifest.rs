@@ -46,7 +46,7 @@ fn every_entry_is_implemented_and_read_entries_only_read() {
     let (m, _) = manifest();
     for e in m["runtime"]["entries"].as_array().unwrap() {
         let name = e["name"].as_str().unwrap();
-        assert!(["apply-material", "material-report", "materials", "solver-benchmark", "stress-check"].contains(&name), "{name}");
+        assert!(["apply-material", "material-report", "materials", "optimise-plate", "solver-benchmark", "stress-check"].contains(&name), "{name}");
     }
 }
 

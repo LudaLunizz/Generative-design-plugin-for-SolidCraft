@@ -110,6 +110,24 @@ jq -e '.[0].result.solver.converged and .[0].result.supports.grid_nodes >= 8' ho
 echo "stress check: plate held by $bore: $(jq -r '.[0].result.verdict' hole2.out)"
 jq -r '.[0].result.picture[]' hole2.out | sed 's/^/    |/'
 
+# 5b. optimise-plate in the real app: sketch + extrude + material in one undo step, and the
+# drawn solid matches the optimiser's own area.
+{
+  echo '['
+  run_step optimise-plate '{"width_mm":120,"height_mm":60,"thickness_mm":8,"cells":40,"iterations":30}'; echo ','
+  echo '{"command":"inspect.measure","params":{}},'
+  echo '{"command":"edit.undo","params":{}},'
+  echo '{"command":"document.inspect","params":{"bodies":"names","timeline":false}}'
+  echo ']'
+} > plate.json
+solidcraft-cli run plate.json --results --json-out plate.out --quiet || fail "optimise-plate run failed: $(head -c 3000 plate.out 2>/dev/null)"
+want=$(jq -r '.[0].result.design.volume_mm3' plate.out)
+got=$(jq -r '.[1].bodies[0].volume_mm3' plate.out)
+python3 -I -c "import sys; w,g=$want,$got; sys.exit(0 if abs(g-w)/w < 0.01 else 1)" || fail "plate volume $got mm3, optimiser says $want"
+jq -e '.[1].bodies[0] | .bbox.min[0] >= -0.01 and .bbox.min[1] >= -0.01 and .bbox.max[0] <= 120.01 and .bbox.max[1] <= 60.01 and (.bbox.max[2] - .bbox.min[2]) > 7.99 and (.bbox.max[2] - .bbox.min[2]) < 8.01 and .material == "Aluminium 6061-T6"' plate.out >/dev/null || fail "plate bbox/material: $(jq -c '.[1].bodies[0]' plate.out)"
+jq -e '(.[3].bodies // .[3]) | tostring | contains("Optimised plate") | not' plate.out >/dev/null || fail "undo left the plate behind: $(jq -c '.[3]' plate.out)"
+echo "optimise-plate: $(jq -r '.[0].result.design | "\(.outlines) outlines, \(.mass_g) g, share \(.volume_share_found)"' plate.out), solid $got mm3 = optimiser $want mm3; one undo removes it"
+
 # 6. The saved design reopens and keeps its materials with no plugin present.
 rm -rf gen-design-engine
 echo '[{"command":"inspect.measure","params":{}}]' > reopen.json
