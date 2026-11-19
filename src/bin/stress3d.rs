@@ -1,7 +1,7 @@
 //! 3D voxel stress check of an STL part, outside SolidCraft (no plugin limits).
 //!
 //! stress3d PART.stl --material ID --fix SIDE --pin AXIS,C1,C2,R --case NAME:FX,FY,FZ[:MX,MY,MZ] ...
-//!          [--voxel MM] [--sf N] [--out DIR]
+//!          [--voxel MM] [--sf N] [--out DIR] [--jacobi]
 //!
 //!   --fix SIDE       supports: the part's xmin/xmax/ymin/ymax/zmin/zmax face (material within half
 //!                    a voxel of it is held)
@@ -9,6 +9,7 @@
 //!                    coordinates C1, C2, radius R: material nodes from R - h/2 to R + h from its axis
 //!   --case           a load case: force (N) spread over the pin, optional couple (N mm) about it
 //!   --material       a library id (materials/library.json); --sf the safety factor needed (2)
+//!   --jacobi         solve with plain Jacobi-preconditioned CG instead of multigrid (for comparison)
 //!   --out DIR        writes report.json and per case three heat-map PNGs (largest stress along x, y, z)
 
 #![allow(clippy::indexing_slicing)] // command-line tool: every index below follows a length check (numbers() returns exactly n values)
@@ -47,10 +48,12 @@ fn run() -> Result<(), String> {
     let mut stl = None;
     let (mut voxel, mut material, mut fix, mut pin, mut out, mut sf) = (2.5, String::from("petg-printed"), None, None, None, 2.0);
     let mut cases = Vec::new();
+    let mut multigrid = true;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match a.as_str() {
+            "--jacobi" => multigrid = false,
             "--voxel" => voxel = value("--voxel")?.parse().map_err(|_| "--voxel: a number in mm")?,
             "--material" => material = value("--material")?,
             "--fix" => fix = Some(value("--fix")?),
@@ -119,7 +122,7 @@ fn run() -> Result<(), String> {
     eprintln!("{stl}: {} triangles, {}x{}x{} voxels of {voxel} mm, {material_cells} with material ({:.0} cm3)", triangles.len(), grid.n[0], grid.n[1], grid.n[2], material_cells as f64 * voxel.powi(3) / 1000.0);
     let fixed = Region::Side { axis: fix_axis, max: fix_max, depth: 0.5 * voxel };
     let load = Region::Ring { point, dir, r_in: radius - 0.5 * voxel, r_out: radius + voxel };
-    let setup = Setup { grid: &grid, solid: &solid, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None };
+    let setup = Setup { grid: &grid, solid: &solid, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid };
     let result = analyse(&setup, &cases, |msg| eprintln!("  {msg} ..."))?;
     let secs = t0.elapsed().as_secs_f64();
 
