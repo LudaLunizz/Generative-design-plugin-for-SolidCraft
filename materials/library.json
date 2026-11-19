@@ -50,6 +50,26 @@
       "title": "EOS PA 2200 material data sheet: laser-sintered specimens, dry, ISO 527",
       "kind": "public_reference",
       "reference": "EOS GmbH, Material data sheet PA 2200 (part density 930 kg/m3). X/Y values; Z strength is 42 MPa"
+    },
+    "bambu-paht-cf": {
+      "title": "Bambu Lab PAHT-CF technical data sheet V3.0: printed ISO 527 specimens, 290 C, 100% infill, annealed and dried 80 C 12 h before testing, dry state",
+      "kind": "public_reference",
+      "reference": "Bambu Lab PAHT-CF TDS V3.0 (density ISO 1183), store.bblcdn.com/7166b20bc68f4c87b32c972b856eeb4b.pdf, read 19 Nov 2026; same values in the University of Waterloo copy. One brand; X-Y values, Z in the notes"
+    },
+    "bambu-asa": {
+      "title": "Bambu Lab ASA technical data sheet V3.0: printed ISO 527 specimens, 260 C, 100% infill, annealed and dried 80 C 12 h before testing",
+      "kind": "public_reference",
+      "reference": "Bambu Lab ASA TDS V3.0 (density ISO 1183), store.bblcdn.com/ad7b08230c164e72856cffbe06bb7dc9.pdf, read 19 Nov 2026. One brand; X-Y values, Z in the notes"
+    },
+    "aluminium-5083-minimums": {
+      "title": "Specification minimums (not typical values): 5083-O/H111 sheet and plate up to 80 mm, yield 115 / tensile 270 MPa (thin sheet 0.2-6.3 mm guarantees 125 / 275)",
+      "kind": "public_reference",
+      "reference": "EN 485-2 O/H111 as quoted by the Righton Blackburns 5083 O/H111 data sheet (25 Jul 2022); ASTM B209M 5083-O as quoted by the Atlas Steels 5083 data sheet (rev. 24 Jun 2021, B209M-10) and Compraco (40-80 mm band 270 / 117). The standards themselves are paywalled; check the supplier's certificate"
+    },
+    "aa-typical-5083": {
+      "title": "Aluminum Association typical physical values for 5083 (typical, not guaranteed)",
+      "kind": "public_reference",
+      "reference": "Atlas Steels Aluminium Alloy 5083 data sheet (rev. 24 Jun 2021), citing Aluminium Association Standards and Data 2009 Metric SI: density 2660, E 71 GPa, expansion 23.8e-6/K (20-100 C), conductivity 117 W/mK; density, expansion and conductivity cross-checked on Compraco's 5083-O table, which also gives specific heat 899 J/kgK"
     }
   },
   "materials": [
@@ -85,6 +105,23 @@
         {"source_id": "asm-typical", "data": {"kind": "thermal_conductivity", "w_m_k": [130.0, 130.0, 130.0], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "thermal_expansion", "per_k": [23.6e-6, 23.6e-6, 23.6e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "T6"}},
         {"source_id": "asm-typical", "data": {"kind": "specific_heat", "j_kg_k": 960.0}, "conditions": {"temperature_k": 293.15, "state": "T6"}}
+      ]
+    },
+    {
+      "id": "aluminium-5083-h111",
+      "name": "Aluminium 5083-H111",
+      "color": "#b3b8be",
+      "family": "metal",
+      "designation": "Aluminium alloy 5083 (EN AW-5083, AlMg4.5Mn0.7), temper H111, sheet and plate",
+      "notes": "Marine and welding alloy, not heat treatable. Yield 115 and tensile 270 MPa are SPECIFICATION MINIMUMS for O/H111 sheet and plate up to 80 mm (EN 485-2 6.3-80 mm band; ASTM B209M 5083-O gives the same at 40-80 mm), so they hold for any thickness up to 80 mm. Thin sheet 0.2-6.3 mm guarantees 125 / 275 MPa; 80-120 mm plate only 110 / 260. Typical values are higher (about 145 / 300 MPa on a mill sheet). Physical values are Aluminum Association typical; specific heat is the Compraco 5083-O value. The Poisson ratio 0.33 is the typical wrought 5xxx value (Matmatch, Alloys International), not from the AA table. No shear strength is listed: no specification guarantees one. Not for use above 65 C (stress corrosion).",
+      "properties": [
+        {"source_id": "aa-typical-5083", "data": {"kind": "density", "kg_m3": 2660.0}, "conditions": {"temperature_k": 293.15, "state": "O/H111"}},
+        {"source_id": "aa-typical-5083", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 71e9, "poisson_ratio": 0.33}}, "conditions": {"temperature_k": 293.15, "state": "O/H111"}},
+        {"source_id": "aluminium-5083-minimums", "data": {"kind": "yield_strength", "pa": 115e6}, "conditions": {"temperature_k": 293.15, "state": "O/H111, t <= 80 mm"}},
+        {"source_id": "aluminium-5083-minimums", "data": {"kind": "tensile_strength", "pa": 270e6}, "conditions": {"temperature_k": 293.15, "state": "O/H111, t <= 80 mm"}},
+        {"source_id": "aa-typical-5083", "data": {"kind": "thermal_conductivity", "w_m_k": [117.0, 117.0, 117.0], "axes": "material123"}, "conditions": {"temperature_k": 298.15, "state": "O/H111"}},
+        {"source_id": "aa-typical-5083", "data": {"kind": "thermal_expansion", "per_k": [23.8e-6, 23.8e-6, 23.8e-6], "axes": "material123"}, "conditions": {"temperature_k": 293.15, "state": "O/H111"}},
+        {"source_id": "aa-typical-5083", "data": {"kind": "specific_heat", "j_kg_k": 899.0}, "conditions": {"temperature_k": 293.15, "state": "O/H111"}}
       ]
     },
     {
@@ -205,6 +242,32 @@
         {"source_id": "bambu-abs", "data": {"kind": "density", "kg_m3": 1050.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
         {"source_id": "bambu-abs", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.96e9, "poisson_ratio": 0.35}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
         {"source_id": "bambu-abs", "data": {"kind": "tensile_strength", "pa": 41e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+      ]
+    },
+    {
+      "id": "asa-printed",
+      "name": "ASA (3D printed, Bambu Lab)",
+      "color": "#d4d6d3",
+      "family": "polymer",
+      "designation": "Acrylonitrile styrene acrylate, FDM printed, loaded along the layers",
+      "notes": "Bambu Lab ASA datasheet V3.0 values (printed specimens, 100% infill, annealed and dried before testing). In-plane (X-Y) values: modulus 2.45 GPa, tensile 37 MPa. Across the layers (Z): modulus 2.12 GPa, tensile 31 MPa. The older V2.0 sheet gave 52 MPa in X-Y and 35 MPa in Z; the library uses V3.0. One brand; print settings and annealing change these numbers. Poisson ratio is a generic estimate, not from the datasheet. UV and weather resistant; heat deflection 92 C at 1.8 MPa.",
+      "properties": [
+        {"source_id": "bambu-asa", "data": {"kind": "density", "kg_m3": 1050.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "bambu-asa", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 2.45e9, "poisson_ratio": 0.35}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}},
+        {"source_id": "bambu-asa", "data": {"kind": "tensile_strength", "pa": 37e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, along the layers"}}
+      ]
+    },
+    {
+      "id": "paht-cf-printed",
+      "name": "PAHT-CF (3D printed, Bambu Lab)",
+      "color": "#3c3d40",
+      "family": "polymer",
+      "designation": "Carbon-fibre reinforced high-temperature nylon (PA12 and other long-chain PA), FDM printed, loaded along the layers",
+      "notes": "Bambu Lab PAHT-CF datasheet V3.0 values, DRY state (printed specimens, 100% infill, annealed and dried 80 C 12 h before testing). The sheet gives no conditioned (wet) tensile values; nylon absorbs water (0.88% saturated at 55% RH) and gets weaker and softer, so dry the part or expect less. In-plane (X-Y) values: modulus 3.86 GPa, tensile 92 MPa. Across the layers (Z): modulus 2.18 GPa, tensile 47 MPa, about half. The older V2.0 sheet gave 88 MPa X-Y and 64 MPa Z. Fibres make printed parts anisotropic, so the isotropic card overstates stiffness off the print plane. One brand. Poisson ratio is a generic estimate, not from the datasheet.",
+      "properties": [
+        {"source_id": "bambu-paht-cf", "data": {"kind": "density", "kg_m3": 1060.0}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, 100% infill"}},
+        {"source_id": "bambu-paht-cf", "data": {"kind": "elasticity", "model": {"symmetry": "isotropic", "young_modulus_pa": 3.86e9, "poisson_ratio": 0.35}}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, dry, along the layers"}},
+        {"source_id": "bambu-paht-cf", "data": {"kind": "tensile_strength", "pa": 92e6}, "conditions": {"temperature_k": 293.15, "state": "FDM printed, dry, along the layers"}}
       ]
     },
     {

@@ -1,14 +1,15 @@
-//! From a density grid to closed outlines that SolidCraft can draw as sketch lines.
+//! From a density grid to closed, smooth outlines that SolidCraft can draw as sketch lines and splines.
 //!
 //! The optimiser gives one density per square cell. Steps: threshold to solid/void, keep only what
 //! is connected to the fixed edge, close diagonal-only contacts (they would draw as outlines that
 //! touch at a point), trace the boundary between solid and void cells as closed loops of grid
-//! corners, cut the staircase corners (edge midpoints) and simplify to straight segments.
+//! corners, sample them at the edge midpoints, smooth them (Taubin; the plate's own edges stay
+//! pinned) and split them into straight runs along the plate's edges and curves inside it.
 //!
 //! Loops run counter-clockwise around solid material, so a hole is a clockwise loop. No indexing
 //! or unwrap here: every lookup is checked.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 /// A grid of solid/void cells, column-major like the optimiser (`i * ny + j`, row `j` upward).
 #[derive(Clone, Debug, PartialEq)]
@@ -16,10 +17,10 @@ pub struct Mask {
     pub nx: usize,
     pub ny: usize,
     solid: Vec<bool>,
+    /// The densities the mask came from (non-finite as 0), to place the outline between cells.
+    density: Vec<f64>,
 }
 
-/// A grid corner in units of half a cell (so edge midpoints stay whole numbers).
-type Half = (i64, i64);
 
 impl Mask {
     /// Cells with density above `threshold` are solid. `None` when the sizes do not fit.
@@ -27,7 +28,12 @@ impl Mask {
         if nx == 0 || ny == 0 || density.len() != nx.checked_mul(ny)? {
             return None;
         }
-        Some(Self { nx, ny, solid: density.iter().map(|&d| d.is_finite() && d > threshold).collect() })
+        Some(Self {
+            nx,
+            ny,
+            solid: density.iter().map(|&d| d.is_finite() && d > threshold).collect(),
+            density: density.iter().map(|&d| if d.is_finite() { d - threshold + 0.5 } else { 0.0 }).collect(),
+        })
     }
 
     pub fn get(&self, i: i64, j: i64) -> bool {
@@ -47,6 +53,15 @@ impl Mask {
         {
             *cell = value;
         }
+    }
+
+    /// Density of a cell shifted so the threshold sits at 0.5; 0 outside the grid.
+    fn density_at(&self, i: i64, j: i64) -> f64 {
+        let (Ok(iu), Ok(ju)) = (usize::try_from(i), usize::try_from(j)) else { return 0.0 };
+        if iu >= self.nx || ju >= self.ny {
+            return 0.0;
+        }
+        self.density.get(iu * self.ny + ju).copied().unwrap_or(0.0)
     }
 
     pub fn count(&self) -> usize {
@@ -169,128 +184,288 @@ impl Mask {
     }
 }
 
-/// The unit-step loop with its staircase cut: every edge contributes its midpoint, and a corner
-/// is kept only where both straight runs meeting there are at least [`KEEP_CORNER_RUN`] cells long
-/// (a real corner of the part). Points on a straight run are removed. Half-cell whole numbers.
-const KEEP_CORNER_RUN: usize = 3;
+/// A point in cell units (x right, y up, origin at the corner of cell (0, 0)).
+pub type Point = (f64, f64);
 
-fn midpoints(corners: &[(i64, i64)]) -> Vec<Half> {
-    let n = corners.len();
-    let dir = |k: usize| -> (i64, i64) {
-        match (corners.get(k % n), corners.get((k + 1) % n)) {
-            (Some(a), Some(b)) => (b.0 - a.0, b.1 - a.1),
-            _ => (0, 0),
-        }
-    };
-    // Length (in unit edges) of the straight run each edge belongs to.
-    let Some(start) = (0..n).find(|&k| dir(k) != dir(k + n - 1)) else { return Vec::new() };
-    let mut run_len = vec![0usize; n];
-    let mut k = 0;
-    while k < n {
-        let first = start + k;
-        let mut len = 1;
-        while k + len < n && dir(first + len) == dir(first) {
-            len += 1;
-        }
-        for m in 0..len {
-            if let Some(slot) = run_len.get_mut((first + m) % n) {
-                *slot = len;
-            }
-        }
-        k += len;
-    }
-    let mut pts: Vec<Half> = Vec::with_capacity(2 * n);
-    for k in 0..n {
-        let (Some(a), Some(b)) = (corners.get(k), corners.get((k + 1) % n)) else { continue };
-        pts.push((a.0 + b.0, a.1 + b.1));
-        // The corner after edge k.
-        let next = (k + 1) % n;
-        let turn = dir(k) != dir(next);
-        let long = |e: usize| run_len.get(e).copied().unwrap_or(0) >= KEEP_CORNER_RUN;
-        if turn && long(k) && long(next) {
-            pts.push((2 * b.0, 2 * b.1));
-        }
-    }
-    remove_collinear(&pts)
+/// How one closed outline is drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shape {
+    /// Straight lines all round (an outline that lies entirely on the plate's edges).
+    Polygon(Vec<Point>),
+    /// One smooth closed curve through these points (an outline that never touches the plate's edges).
+    Spline(Vec<Point>),
+    /// Straight runs along the plate's edges and smooth curves between them, joined end to end.
+    Mixed(Vec<Piece>),
 }
 
-fn remove_collinear(points: &[Half]) -> Vec<Half> {
+#[derive(Clone, Debug, PartialEq)]
+pub enum Piece {
+    /// An open polyline.
+    Line(Vec<Point>),
+    /// An open smooth curve through these points.
+    Curve(Vec<Point>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outline {
+    pub shape: Shape,
+    /// Signed area of the smoothed loop (positive counter-clockwise, so holes are negative).
+    pub area: f64,
+    /// The smoothed loop itself, densely sampled (what the curves follow).
+    pub dense: Vec<Point>,
+}
+
+impl Outline {
+    /// Points handed to the sketch.
+    pub fn drawn_points(&self) -> usize {
+        match &self.shape {
+            Shape::Polygon(p) | Shape::Spline(p) => p.len(),
+            Shape::Mixed(pieces) => pieces.iter().map(|p| match p { Piece::Line(v) | Piece::Curve(v) => v.len() }).sum(),
+        }
+    }
+}
+
+/// Taubin smoothing weights (Taubin 1995, "A signal processing approach to fair surface design"):
+/// a shrinking step `LAMBDA` then an inflating step `MU`, so the outline loses its stair steps
+/// without shrinking. The same family of methods as Blender's Laplacian Smooth (Desbrun et al. 1999),
+/// written here from the papers, not from Blender's (GPL) code.
+const LAMBDA: f64 = 0.5;
+const MU: f64 = -0.53;
+/// Smoothing passes tried in turn; a pass count whose loops cross themselves or each other falls back
+/// to the next, gentler one (0 = the stair steps' edge midpoints, which never cross).
+const PASSES: [usize; 4] = [12, 6, 2, 0];
+/// Roughly one spline point per this many dense points (about 1.5 cells apart).
+const CURVE_STEP: usize = 3;
+/// SolidCraft's limit for one fit-point spline.
+const MAX_CURVE_POINTS: usize = 500;
+
+/// The outlines of a mask, smoothed: every loop is traced on the cell edges, sampled at the edge
+/// midpoints, and smoothed. Points on the plate's own edges (the fixed edge, the load and support
+/// edges) are pinned, so those stay straight and in place; everything inside becomes curves.
+pub fn smooth_outlines(mask: &Mask) -> Result<Vec<Outline>, String> {
+    let loops: Vec<Vec<(Point, bool)>> = mask.trace()?.iter().map(|c| dense(c, mask)).collect();
+    for passes in PASSES {
+        let smoothed: Vec<Vec<(Point, bool)>> = loops.iter().map(|l| taubin(l, passes)).collect();
+        let dense_loops: Vec<Vec<Point>> = smoothed.iter().map(|l| l.iter().map(|&(p, _)| p).collect()).collect();
+        if passes > 0 && any_crossing(&dense_loops) {
+            continue;
+        }
+        return Ok(smoothed
+            .iter()
+            .zip(dense_loops)
+            .filter(|(l, _)| l.len() >= 3)
+            .map(|(l, d)| Outline { shape: shape(l), area: signed_area(&d), dense: d })
+            .filter(|o| o.area.abs() > 1e-9)
+            .collect());
+    }
+    Err("the smoothed outline crosses itself".into())
+}
+
+/// The unit-step loop as one point per cell edge, plus the turning corners that lie on the plate's
+/// edge. A point on the plate's edge is pinned. The others sit where the density crosses the
+/// threshold between the solid and the void cell (as in marching squares), not at the edge's middle.
+fn dense(corners: &[(i64, i64)], mask: &Mask) -> Vec<(Point, bool)> {
+    let (nx, ny) = (mask.nx as f64, mask.ny as f64);
+    let n = corners.len();
+    let on_edge = |p: Point| p.0 == 0.0 || p.1 == 0.0 || p.0 == nx || p.1 == ny;
+    let mut out = Vec::with_capacity(2 * n);
+    for k in 0..n {
+        let (Some(a), Some(b), Some(c)) = (corners.get(k), corners.get((k + 1) % n), corners.get((k + 2) % n)) else { continue };
+        let mid = ((a.0 + b.0) as f64 / 2.0, (a.1 + b.1) as f64 / 2.0);
+        if on_edge(mid) {
+            out.push((mid, true));
+        } else {
+            out.push((crossing(mid, (b.0 - a.0, b.1 - a.1), mask), false));
+        }
+        let corner = (b.0 as f64, b.1 as f64);
+        let turns = (b.0 - a.0, b.1 - a.1) != (c.0 - b.0, c.1 - b.1);
+        if turns && on_edge(corner) {
+            out.push((corner, true));
+        }
+    }
+    out
+}
+
+/// Where the density crosses the threshold on the line between the centres of the solid cell (left
+/// of the edge) and the void cell (right of it), as an offset of at most half a cell from the edge's
+/// middle. Where the mask was edited (dropped islands, closed diagonal contacts) the density does not
+/// match and the middle is used.
+fn crossing(mid: Point, dir: (i64, i64), mask: &Mask) -> Point {
+    let normal = (-(dir.1 as f64), dir.0 as f64); // left of the edge, into the solid
+    let cell = |s: f64| ((mid.0 + s * normal.0).floor() as i64, (mid.1 + s * normal.1).floor() as i64);
+    let (solid, void) = (cell(0.5), cell(-0.5));
+    let (ds, dv) = (mask.density_at(solid.0, solid.1), mask.density_at(void.0, void.1));
+    if !(ds > 0.5 && dv <= 0.5) {
+        return mid;
+    }
+    let t = ((ds - 0.5) / (ds - dv)).clamp(0.0, 1.0);
+    (mid.0 + (0.5 - t) * normal.0, mid.1 + (0.5 - t) * normal.1)
+}
+
+fn taubin(points: &[(Point, bool)], passes: usize) -> Vec<(Point, bool)> {
+    let n = points.len();
+    let mut cur = points.to_vec();
+    if n < 3 {
+        return cur;
+    }
+    for step in 0..2 * passes {
+        let f = if step % 2 == 0 { LAMBDA } else { MU };
+        let prev = cur.clone();
+        for (k, slot) in cur.iter_mut().enumerate() {
+            let (Some(&(a, _)), Some(&(p, pinned)), Some(&(b, _))) = (prev.get((k + n - 1) % n), prev.get(k), prev.get((k + 1) % n)) else { continue };
+            if !pinned {
+                slot.0 = (p.0 + f * ((a.0 + b.0) / 2.0 - p.0), p.1 + f * ((a.1 + b.1) / 2.0 - p.1));
+            }
+        }
+    }
+    cur
+}
+
+/// Splits a smoothed loop into straight runs (between pinned points) and curves (through the free
+/// points between two pinned ones).
+fn shape(points: &[(Point, bool)]) -> Shape {
+    let n = points.len();
+    let Some(start) = points.iter().position(|&(_, pinned)| pinned) else {
+        return Shape::Spline(resample(&points.iter().map(|&(p, _)| p).collect::<Vec<_>>(), true));
+    };
+    if points.iter().all(|&(_, pinned)| pinned) {
+        let poly: Vec<Point> = points.iter().map(|&(p, _)| p).collect();
+        return Shape::Polygon(drop_collinear(&poly, true));
+    }
+    // Walk once round from a pinned point, back to it.
+    let at = |k: usize| points.get((start + k) % n).copied().unwrap_or(((0.0, 0.0), true));
+    let mut pieces: Vec<Piece> = Vec::new();
+    let mut k = 0;
+    while k < n {
+        let (p, _) = at(k);
+        if at(k + 1).1 {
+            // A straight step to the next pinned point; extend the last line if there is one.
+            let q = at(k + 1).0;
+            match pieces.last_mut() {
+                Some(Piece::Line(v)) => v.push(q),
+                _ => pieces.push(Piece::Line(vec![p, q])),
+            }
+            k += 1;
+        } else {
+            let mut run = vec![p];
+            let mut m = k + 1;
+            while m < n && !at(m).1 {
+                run.push(at(m).0);
+                m += 1;
+            }
+            run.push(at(m).0);
+            pieces.push(Piece::Curve(resample(&run, false)));
+            k = m;
+        }
+    }
+    for piece in &mut pieces {
+        if let Piece::Line(v) = piece {
+            *v = drop_collinear(v, false);
+        }
+    }
+    Shape::Mixed(pieces)
+}
+
+/// Every `CURVE_STEP`-th point (more apart when the curve would pass SolidCraft's limit); an open
+/// run keeps both ends exactly.
+fn resample(points: &[Point], closed: bool) -> Vec<Point> {
+    let n = points.len();
+    let step = CURVE_STEP.max(n.div_ceil(MAX_CURVE_POINTS - 2));
+    let mut out: Vec<Point> = points.iter().step_by(step).copied().collect();
+    if closed {
+        if out.len() < 3 {
+            return points.iter().take(MAX_CURVE_POINTS).copied().collect();
+        }
+    } else if let Some(&last) = points.last() {
+        // Drop a sample that sits too close to the end, then end exactly on it.
+        if n > 1 && (n - 1) % step != 0 && (n - 1) % step < step / 2 + 1 && out.len() > 1 {
+            out.pop();
+        }
+        if out.last() != Some(&last) {
+            out.push(last);
+        }
+    }
+    out
+}
+
+fn drop_collinear(points: &[Point], closed: bool) -> Vec<Point> {
     let n = points.len();
     if n < 3 {
         return points.to_vec();
     }
     let mut out = Vec::with_capacity(n);
     for k in 0..n {
-        let (Some(p), Some(q), Some(r)) = (points.get((k + n - 1) % n), points.get(k), points.get((k + 1) % n)) else { continue };
+        let Some(&q) = points.get(k) else { continue };
+        let ends = !closed && (k == 0 || k == n - 1);
+        let (Some(p), Some(r)) = (points.get((k + n - 1) % n), points.get((k + 1) % n)) else { continue };
         let cross = (q.0 - p.0) * (r.1 - q.1) - (q.1 - p.1) * (r.0 - q.0);
         let dot = (q.0 - p.0) * (r.0 - q.0) + (q.1 - p.1) * (r.1 - q.1);
-        if cross != 0 || dot < 0 {
-            out.push(*q);
+        if ends || cross.abs() > 1e-9 || dot < 0.0 {
+            out.push(q);
         }
     }
     out
 }
 
-/// Douglas-Peucker on a closed loop. `tol` is in the same units as the points.
-fn simplify_closed(points: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
-    let n = points.len();
-    if n <= 3 {
-        return points.to_vec();
-    }
-    let Some(first) = points.first() else { return Vec::new() };
-    let far = points
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| dist2(a, first).total_cmp(&dist2(b, first)))
-        .map_or(0, |(k, _)| k);
-    // A linear copy that starts at point 0 and ends back on it.
-    let mut line: Vec<(f64, f64)> = points.to_vec();
-    line.push(*first);
-    let mut keep = vec![false; line.len()];
-    for k in [0, far, n] {
-        if let Some(slot) = keep.get_mut(k) {
-            *slot = true;
+/// Whether any two segments of the loops cross (within a loop or between loops). Segments are at
+/// most about a cell long, so a grid of 1-cell buckets finds every candidate pair.
+fn any_crossing(loops: &[Vec<Point>]) -> bool {
+    let mut buckets: HashMap<(i64, i64), Vec<(usize, usize)>> = HashMap::new();
+    for (l, pts) in loops.iter().enumerate() {
+        for k in 0..pts.len() {
+            if let (Some(a), Some(b)) = (pts.get(k), pts.get((k + 1) % pts.len())) {
+                let key = (((a.0 + b.0) / 2.0).floor() as i64, ((a.1 + b.1) / 2.0).floor() as i64);
+                buckets.entry(key).or_default().push((l, k));
+            }
         }
     }
-    let mut stack = vec![(0usize, far), (far, n)];
-    while let Some((lo, hi)) = stack.pop() {
-        let (Some(a), Some(b)) = (line.get(lo), line.get(hi)) else { continue };
-        let mut worst = (0.0f64, lo);
-        for k in lo + 1..hi {
-            if let Some(p) = line.get(k) {
-                let d = point_segment(p, a, b);
-                if d > worst.0 {
-                    worst = (d, k);
+    let seg = |(l, k): (usize, usize)| -> Option<(Point, Point)> {
+        let pts = loops.get(l)?;
+        Some((*pts.get(k)?, *pts.get((k + 1) % pts.len())?))
+    };
+    for (&(bx, by), list) in &buckets {
+        for &s in list {
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let Some(other) = buckets.get(&(bx + dx, by + dy)) else { continue };
+                    for &t in other {
+                        if t <= s {
+                            continue;
+                        }
+                        let n = loops.get(s.0).map_or(0, Vec::len);
+                        let neighbours = s.0 == t.0 && (t.1 == (s.1 + 1) % n || s.1 == (t.1 + 1) % n);
+                        if neighbours {
+                            continue;
+                        }
+                        if let (Some((p, q)), Some((r, u))) = (seg(s), seg(t))
+                            && crosses(p, q, r, u)
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
         }
-        if worst.0 > tol {
-            if let Some(slot) = keep.get_mut(worst.1) {
-                *slot = true;
-            }
-            stack.push((lo, worst.1));
-            stack.push((worst.1, hi));
-        }
     }
-    line.iter().take(n).zip(&keep).filter(|(_, k)| **k).map(|(p, _)| *p).collect()
+    false
 }
 
-fn dist2(a: &(f64, f64), b: &(f64, f64)) -> f64 {
-    (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)
-}
-
-fn point_segment(p: &(f64, f64), a: &(f64, f64), b: &(f64, f64)) -> f64 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let len2 = dx * dx + dy * dy;
-    if len2 == 0.0 {
-        return dist2(p, a).sqrt();
+/// Proper crossing or touching of two segments (shared end points of neighbours are excluded by the caller).
+fn crosses(p: Point, q: Point, r: Point, s: Point) -> bool {
+    let o = |a: Point, b: Point, c: Point| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    let (d1, d2, d3, d4) = (o(p, q, r), o(p, q, s), o(r, s, p), o(r, s, q));
+    d1 * d2 < 1e-12 && d3 * d4 < 1e-12 && {
+        // Collinear segments: only overlapping ones count.
+        let (minx, maxx) = (p.0.min(q.0), p.0.max(q.0));
+        let (miny, maxy) = (p.1.min(q.1), p.1.max(q.1));
+        let (rminx, rmaxx) = (r.0.min(s.0), r.0.max(s.0));
+        let (rminy, rmaxy) = (r.1.min(s.1), r.1.max(s.1));
+        minx <= rmaxx + 1e-12 && rminx <= maxx + 1e-12 && miny <= rmaxy + 1e-12 && rminy <= maxy + 1e-12
     }
-    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0);
-    dist2(p, &(a.0 + t * dx, a.1 + t * dy)).sqrt()
 }
 
 /// Signed area of a loop (positive counter-clockwise).
-pub fn signed_area(points: &[(f64, f64)]) -> f64 {
+pub fn signed_area(points: &[Point]) -> f64 {
     let n = points.len();
     let mut s = 0.0;
     for k in 0..n {
@@ -299,21 +474,6 @@ pub fn signed_area(points: &[(f64, f64)]) -> f64 {
         }
     }
     s / 2.0
-}
-
-/// The outlines of a mask as simplified loops in cell units (x right, y up, origin at the corner
-/// of cell (0, 0)). `tol` is the largest deviation from the staircase, in cells.
-pub fn outlines(mask: &Mask, tol: f64) -> Result<Vec<Vec<(f64, f64)>>, String> {
-    let mut out = Vec::new();
-    for corners in mask.trace()? {
-        let mids = midpoints(&corners);
-        let pts: Vec<(f64, f64)> = mids.iter().map(|&(x, y)| (x as f64 / 2.0, y as f64 / 2.0)).collect();
-        let simple = simplify_closed(&pts, tol);
-        if simple.len() >= 3 && signed_area(&simple).abs() > 1e-9 {
-            out.push(simple);
-        }
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -337,8 +497,8 @@ mod tests {
         Mask::from_density(&d, nx, ny, 0.5).unwrap()
     }
 
-    fn total_area(m: &Mask, tol: f64) -> f64 {
-        outlines(m, tol).unwrap().iter().map(|l| signed_area(l)).sum()
+    fn total_area(m: &Mask) -> f64 {
+        smooth_outlines(m).unwrap().iter().map(|o| o.area).sum()
     }
 
     #[test]
@@ -354,32 +514,24 @@ mod tests {
     }
 
     #[test]
-    fn a_rectangle_is_one_ccw_loop_of_four_points() {
+    fn a_full_plate_is_one_ccw_polygon_of_four_points() {
         let m = mask(&["######", "######", "######", "######"]);
-        let l = outlines(&m, 0.25).unwrap();
+        let l = smooth_outlines(&m).unwrap();
         assert_eq!(l.len(), 1);
-        assert_eq!(l[0].len(), 4, "{:?}", l[0]);
-        assert!((signed_area(&l[0]) - 24.0).abs() < 1e-9, "real corners stay exact");
+        let Shape::Polygon(p) = &l[0].shape else { panic!("{:?}", l[0].shape) };
+        assert_eq!(p.len(), 4, "{p:?}");
+        assert!((l[0].area - 24.0).abs() < 1e-9, "the plate's corners stay exact");
     }
 
     #[test]
-    fn a_thin_end_gets_its_corners_cut_a_little() {
-        let m = mask(&["####", "####"]);
-        let l = outlines(&m, 0.25).unwrap();
-        assert_eq!(l.len(), 1);
-        assert!(signed_area(&l[0]) > 0.0);
-        assert!((signed_area(&l[0]) - 8.0).abs() < 1.0, "{:?}", l[0]);
-    }
-
-    #[test]
-    fn a_hole_is_a_clockwise_loop() {
-        let m = mask(&["######", "#....#", "#....#", "######"]);
-        let l = outlines(&m, 0.25).unwrap();
+    fn a_hole_is_a_clockwise_spline() {
+        let m = mask(&["########", "##....##", "##....##", "##....##", "########"]);
+        let l = smooth_outlines(&m).unwrap();
         assert_eq!(l.len(), 2);
-        let areas: Vec<f64> = l.iter().map(|x| signed_area(x)).collect();
-        assert!(areas.iter().any(|a| *a > 0.0) && areas.iter().any(|a| *a < 0.0), "{areas:?}");
-        let net: f64 = areas.iter().sum();
-        assert!((net - 16.0).abs() < 1.5, "net {net}");
+        let hole = l.iter().find(|o| o.area < 0.0).unwrap();
+        assert!(matches!(hole.shape, Shape::Spline(_)), "{:?}", hole.shape);
+        let net = total_area(&m);
+        assert!((net - m.count() as f64).abs() < 1.5, "net {net} vs {} cells", m.count());
     }
 
     #[test]
@@ -405,33 +557,86 @@ mod tests {
         assert!(checker.trace().is_ok());
     }
 
+    /// A slanted bar from the left edge into the plate: the part on the left edge stays a straight
+    /// line exactly on x = 0, the rest becomes curves, and the area stays close to the cell count.
     #[test]
-    fn a_slanted_bar_is_few_points_and_keeps_its_area() {
-        // A 45 degree staircase band: many unit steps, a few straight segments after simplifying.
+    fn a_slanted_bar_is_straight_on_the_edge_and_curved_inside() {
         let n = 24;
         let mut rows = Vec::new();
         for r in 0..n {
             let mut line = String::new();
             for c in 0..n {
-                let d = c as i64 - (n as i64 - 1 - r as i64);
-                line.push(if (0..4).contains(&d) { '#' } else { '.' });
+                let d = c as i64 - (n as i64 - 1 - r as i64) / 2;
+                line.push(if (0..4).contains(&d) || (c == 0 && r >= n / 2) { '#' } else { '.' });
             }
             rows.push(line);
         }
         let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
         let mut m = mask(&refs);
+        m.keep_connected_to_left();
         m.close_diagonal_contacts().unwrap();
         let cells = m.count() as f64;
-        let l = outlines(&m, 0.4).unwrap();
+        let l = smooth_outlines(&m).unwrap();
         assert_eq!(l.len(), 1);
-        assert!(l[0].len() < 14, "{} points", l[0].len());
-        let a = signed_area(&l[0]);
-        assert!((a - cells).abs() / cells < 0.06, "area {a} vs {cells} cells");
+        let Shape::Mixed(pieces) = &l[0].shape else { panic!("{:?}", l[0].shape) };
+        assert!(pieces.iter().any(|p| matches!(p, Piece::Curve(_))));
+        let on_left = pieces.iter().any(|p| matches!(p, Piece::Line(v) if v.windows(2).any(|w| w[0].0 == 0.0 && w[1].0 == 0.0)));
+        assert!(on_left, "{pieces:?}");
+        // Pieces join end to end and close.
+        let ends: Vec<(Point, Point)> = pieces.iter().map(|p| match p { Piece::Line(v) | Piece::Curve(v) => (v[0], *v.last().unwrap()) }).collect();
+        for k in 0..ends.len() {
+            assert_eq!(ends[k].1, ends[(k + 1) % ends.len()].0, "piece {k} does not join the next");
+        }
+        assert!(l[0].drawn_points() < l[0].dense.len() / 2);
+        assert!((l[0].area - cells).abs() / cells < 0.06, "area {} vs {cells} cells", l[0].area);
+    }
+
+    /// A disc inside the plate: one closed spline, much rounder than the stair steps.
+    #[test]
+    fn a_disc_becomes_round() {
+        let (nx, ny, r) = (40usize, 40usize, 12.0);
+        let mut d = vec![0.0; nx * ny];
+        for i in 0..nx {
+            for j in 0..ny {
+                let (x, y) = (i as f64 + 0.5 - 20.0, j as f64 + 0.5 - 20.0);
+                if x.hypot(y) <= r {
+                    d[i * ny + j] = 1.0;
+                }
+            }
+        }
+        let m = Mask::from_density(&d, nx, ny, 0.5).unwrap();
+        let l = smooth_outlines(&m).unwrap();
+        assert_eq!(l.len(), 1);
+        assert!(matches!(l[0].shape, Shape::Spline(_)));
+        let spread = |pts: &[Point]| {
+            let radii: Vec<f64> = pts.iter().map(|p| (p.0 - 20.0).hypot(p.1 - 20.0)).collect();
+            radii.iter().cloned().fold(f64::MIN, f64::max) - radii.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        let raw: Vec<Point> = dense(&m.trace().unwrap()[0], &m).iter().map(|&(p, _)| p).collect();
+        let (before, after) = (spread(&raw), spread(&l[0].dense));
+        assert!(after < 0.7 * before, "radius spread {after} (stair steps {before})");
+        assert!((l[0].area - m.count() as f64).abs() / (m.count() as f64) < 0.02, "Taubin keeps the area");
+
+        // With a graded density, as the optimiser's filter gives, the outline follows the 0.5 level
+        // between the cells and comes out nearly a true circle.
+        let mut g = vec![0.0; nx * ny];
+        for i in 0..nx {
+            for j in 0..ny {
+                let (x, y) = (i as f64 + 0.5 - 20.0, j as f64 + 0.5 - 20.0);
+                g[i * ny + j] = (0.5 + (r - x.hypot(y)) / 3.0).clamp(0.0, 1.0);
+            }
+        }
+        let m = Mask::from_density(&g, nx, ny, 0.5).unwrap();
+        let l = smooth_outlines(&m).unwrap();
+        let s = spread(&l[0].dense);
+        assert!(s < 0.1, "radius spread {s} with a graded density");
+        let true_area = std::f64::consts::PI * r * r;
+        assert!((l[0].area - true_area).abs() / true_area < 0.01, "area {} vs {true_area}", l[0].area);
     }
 
     #[test]
-    fn simplified_loops_never_cross_themselves_on_random_blobs() {
-        // A deterministic pseudo-random field; every loop must stay simple (no two segments cross).
+    fn smoothed_loops_never_cross_on_random_blobs() {
+        // A deterministic pseudo-random field: thin features everywhere, so the gentler fallbacks run too.
         let (nx, ny) = (30usize, 20usize);
         let mut s = 12345u64;
         let mut d = vec![0.0; nx * ny];
@@ -441,39 +646,37 @@ mod tests {
         }
         let mut m = Mask::from_density(&d, nx, ny, 0.5).unwrap();
         m.close_diagonal_contacts().unwrap();
-        for tol in [0.0, 0.25, 0.5] {
-            let loops = outlines(&m, tol).unwrap();
-            for l in &loops {
-                assert!(is_simple(l), "tol {tol}: loop with {} points crosses itself", l.len());
+        let loops = smooth_outlines(&m).unwrap();
+        let dense: Vec<Vec<Point>> = loops.iter().map(|o| o.dense.clone()).collect();
+        assert!(!any_crossing(&dense));
+        for o in &loops {
+            if let Shape::Spline(p) | Shape::Polygon(p) = &o.shape {
+                assert!(p.len() <= MAX_CURVE_POINTS);
             }
         }
     }
 
-    fn is_simple(l: &[(f64, f64)]) -> bool {
-        let n = l.len();
-        for a in 0..n {
-            for b in a + 1..n {
-                if b == a + 1 || (a == 0 && b == n - 1) {
-                    continue;
-                }
-                if crosses(l[a], l[(a + 1) % n], l[b], l[(b + 1) % n]) {
-                    return false;
-                }
-            }
-        }
-        true
+    #[test]
+    fn crossing_finds_a_figure_eight() {
+        let eight = vec![(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)];
+        assert!(any_crossing(&[eight]));
+        let square = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        assert!(!any_crossing(&[square]));
     }
 
-    fn crosses(p: (f64, f64), q: (f64, f64), r: (f64, f64), s: (f64, f64)) -> bool {
-        let o = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
-        let (d1, d2, d3, d4) = (o(p, q, r), o(p, q, s), o(r, s, p), o(r, s, q));
-        d1 * d2 < -1e-12 && d3 * d4 < -1e-12
+    #[test]
+    fn long_curves_stay_under_the_spline_limit() {
+        let run: Vec<Point> = (0..3000).map(|k| (k as f64 * 0.5, 0.0)).collect();
+        let r = resample(&run, false);
+        assert!(r.len() <= MAX_CURVE_POINTS, "{}", r.len());
+        assert_eq!(r[0], run[0]);
+        assert_eq!(*r.last().unwrap(), *run.last().unwrap());
     }
 
     #[test]
     fn total_area_is_close_to_the_cell_count() {
         let m = mask(&["######", "##..##", "##..##", "######"]);
-        let a = total_area(&m, 0.25);
+        let a = total_area(&m);
         assert!((a - m.count() as f64).abs() < 2.0, "{a}");
     }
 }

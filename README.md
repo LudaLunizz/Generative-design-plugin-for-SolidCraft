@@ -14,7 +14,7 @@ for flat parts, and a **plate optimiser** that designs a lightweight plate and d
 and an extrude. Next to the plugin there are three command-line tools (3D stress check,
 printed-part stress check, beam optimiser; see below).
 
-Version 0.4.2 is tested with **SolidCraft 0.44.1**
+Version 0.5.0 is tested with **SolidCraft 0.44.1**
 (`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
@@ -62,8 +62,12 @@ draw (a test checks this). From MCP or a script: `plugin.run` with the entry nam
   the height actually used. Plates that are too tall and narrow for that are refused.
 - The shape comes from 2D SIMP optimisation (density filter, optimality criteria, multigrid
   solver). Cells above 0.5 density are material; only material joined to the fixed edge is kept;
-  diagonal-only contacts are closed; the staircase boundary is smoothed (real corners are kept) and
-  drawn as closed sketch lines, with holes as inner loops, and extruded.
+  diagonal-only contacts are closed. Since 0.5 the outline is **smooth**: each boundary point is
+  placed where the density crosses 0.5 between two cells (as in marching squares), the loop is
+  smoothed with Taubin's method (it removes the stair steps without shrinking the part), and drawn
+  as fit-point splines. Points on the plate's own edges stay pinned, so the fixed edge, the load and
+  support edges stay straight lines in place; holes are closed splines. If smoothing would make two
+  outlines touch, a gentler pass is used (down to the plain stair-step midpoints).
 - It is checked in SolidCraft: the extruded solid has the same volume as the optimiser's own area,
   and one undo removes sketch, body and material assignment.
 - **Stiffness only.** Strength, stress concentrations, buckling and manufacturability are not
@@ -81,6 +85,7 @@ report says how much stress a material may take, not how much the part gets.
 |---|---|---|
 | `aluminium-6061-t6` | Aluminium 6061-T6 | specification minimums for strength (yield 240, tensile 260 MPa), ASM typical for the rest |
 | `aluminium-7075-t6` | Aluminium 7075-T6 | specification minimums for strength (yield 460, tensile 540 MPa), ASM typical for the rest |
+| `aluminium-5083-h111` | Aluminium 5083-H111 | specification minimums for strength up to 80 mm (yield 115, tensile 270 MPa), Aluminum Association typical for the rest |
 | `steel-s235jr` | Steel S235JR | EN 10025-2 minimums, Eurocode E/nu/density |
 | `steel-s355jr` | Steel S355JR | EN 10025-2 minimums, Eurocode E/nu/density |
 | `stainless-304` | Stainless steel 304 | ASTM A240 minimum strengths, typical physical values |
@@ -89,6 +94,8 @@ report says how much stress a material may take, not how much the part gets.
 | `pla-printed` | PLA (3D printed, generic) | Prusament PLA data sheet (printed specimens) |
 | `petg-printed` | PETG (3D printed, generic) | Prusament PETG data sheet (printed specimens) |
 | `abs-printed` | ABS (3D printed, generic) | Bambu Lab ABS data sheet (annealed specimens) |
+| `asa-printed` | ASA (3D printed, Bambu Lab) | Bambu Lab ASA data sheet V3.0 (annealed specimens) |
+| `paht-cf-printed` | PAHT-CF (3D printed, Bambu Lab) | Bambu Lab PAHT-CF data sheet V3.0 (annealed specimens, dry) |
 | `pa12-sls` | Nylon PA12 (SLS printed, generic) | EOS PA 2200 data sheet (laser sintered) |
 
 Every property names its source in the card; SolidCraft shows them as "source review required".
@@ -114,6 +121,11 @@ out of it (7075 thermal expansion 23.6, not 23.4). Things to know:
   (3.8 GPa) is not used; the library has the across-layers 2.96 GPa. Across the layers (Z) the
   datasheets give lower strengths (PLA 38, PETG 30, ABS 32, PA12 42 MPa); the library holds the
   in-plane values, so a part loaded across its layers is weaker than the card says.
+- 5083-H111 uses the O/H111 minimums that hold for any thickness up to 80 mm (115 / 270 MPa);
+  thin sheet up to 6.3 mm guarantees 125 / 275, plate over 80 mm less.
+- PAHT-CF and ASA are Bambu Lab's V3.0 sheets (annealed specimens). Across the layers they give
+  PAHT-CF 47 MPa (half of in-plane 92) and ASA 31 MPa. PAHT-CF is the dry value: the sheet has
+  no conditioned figures, and nylon that has taken up moisture is weaker.
 
 To add or change a material: edit `materials/library.json`, run `./build.sh` (it regenerates
 `plugin.json`, runs every check and packages the zip), then `tests/cli-test.sh`.
@@ -186,6 +198,20 @@ structural calculation.
 0.1.0 (not working): the manifest granted a non-existent command and asked for more than the
 host allows; `plugin.wasm` was SolidCraft's sample box component, not this code; `optimize` and
 `analyze` returned invented numbers. It stays in the git history.
+
+## Credits
+
+The outline smoothing is written for this plugin from the published methods, not copied from any
+program:
+
+- G. Taubin, "A signal processing approach to fair surface design", SIGGRAPH 1995 (the λ|μ
+  smoothing used here, λ = 0.5, μ = -0.53).
+- M. Desbrun, M. Meyer, P. Schröder, A. H. Barr, "Implicit fairing of irregular meshes using
+  diffusion and curvature flow", SIGGRAPH 1999 (the Laplacian smoothing that Blender's Laplacian
+  Smooth modifier is based on).
+
+Thanks to the Blender project, whose smoothing tools were the model for this step. Blender's code
+is GPL, so none of it is used here; this plugin stays MIT OR Apache-2.0.
 
 ## License
 
