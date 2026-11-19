@@ -19,7 +19,7 @@ manifest = {
     "name": "Generative Design Engine",
     "version": VERSION,
     "description": "Engineering material library (sourced cards), material report, a 2D stress check of flat parts "
-                   "with safety factor, and a plate optimiser that draws its result as a sketch and an extrude.",
+                   "with safety factor, and a plate optimiser (sketch + extrude). Third-party plugin, not affiliated with SolidCraft.",
     "capabilities": ["commands@0.1"],
     "runtime": {
         "module": "plugin.wasm",

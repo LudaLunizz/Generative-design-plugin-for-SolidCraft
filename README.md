@@ -1,5 +1,12 @@
 # Generative Design Engine (SolidCraft plugin)
 
+> **Third-party project, not affiliated with SolidCraft.** This plugin is made independently by
+> LudaLunizz. It is **not** made, endorsed, sponsored or supported by Tangency Labs or the
+> SolidCraft maintainers, and it has no official connection to them. It only builds on their
+> software: it is an add-on that runs inside SolidCraft through SolidCraft's public plugin
+> interface. "SolidCraft" is their name and is used here only to say what the plugin works with.
+> Questions and bugs about this plugin belong in this repository, not with the SolidCraft team.
+
 A [SolidCraft](https://github.com/tangency-labs/solidcraft) command plugin (`craft:plugin@0.1.0`,
 capability `commands@0.1`). Version 0.4: an engineering **material library** that becomes
 SolidCraft's own physical material cards, a per-body **material report**, a **stress check**
@@ -7,8 +14,7 @@ for flat parts, and a **plate optimiser** that designs a lightweight plate and d
 and an extrude. Next to the plugin there are three command-line tools (3D stress check,
 printed-part stress check, beam optimiser; see below).
 
-Independent project: not made, endorsed or supported by Tangency Labs or the SolidCraft
-maintainers. "SolidCraft" is their name. Version 0.4.1 is tested with **SolidCraft 0.44.1**
+Version 0.4.1 is tested with **SolidCraft 0.44.1**
 (`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
