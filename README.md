@@ -14,7 +14,7 @@ for flat parts, and a **plate optimiser** that designs a lightweight plate and d
 and an extrude. Next to the plugin there are three command-line tools (3D stress check,
 printed-part stress check, beam optimiser; see below).
 
-Version 0.5.0 is tested with **SolidCraft 0.44.1**
+Version 0.5.1 is tested with **SolidCraft 0.44.1**
 (`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
@@ -154,9 +154,18 @@ These run natively (no plugin limits on time or memory) and are built with
 
 | Tool | What it does |
 |---|---|
-| `stress3d` | 3D voxel stress check of an STL part: majority-vote voxelisation, preconditioned CG solve, von Mises heat maps (PNG) and a report (`report.json`) with the safety factor against a library material. |
+| `stress3d` | 3D voxel stress check of an STL part: majority-vote voxelisation, multigrid-preconditioned CG solve (`--jacobi` for the plain Jacobi solver), von Mises heat maps (PNG) and a report (`report.json`) with the safety factor against a library material. |
 | `stress3d_printed` | The same for a **3D-printed** part: solid walls and top/bottom skins around a lighter infill core, with layers along z. Infill stiffness is `infill^exp` (exp 1 = upper bound, exp 2 = lower bound). |
 | `beam_opt` | Lightest plate-truss for a long cantilever beam: SIMP topology optimisation with a min-member filter, then strut and sideways (lateral-torsional) buckling checks. |
+
+The 3D tools use a geometric multigrid preconditioner (`src/mg3d.rs`): Galerkin coarse matrices per
+coarse cell, trilinear transfers, damped Jacobi smoothing with the damping set from the largest
+eigenvalue of each level, a dense solve at the bottom. It gives the same answers as plain
+Jacobi-preconditioned CG (the tests compare them) in far fewer steps. On the wall foot (150,000
+voxels of 1.5 mm, PETG) the CG steps drop from about 1,850 to about 90 and the run from 137 s to 39 s;
+at 2.5 mm voxels from 14.5 s to 6 s; the printed-part tool at 2 mm from 47 s to 24 s. Grids small
+enough for a plain solve (a few thousand free DOFs) skip it, and a grid whose first coarse level
+would need more than 4 GB falls back to Jacobi with a warning.
 
 Usage is in the header comment of each file in `src/bin/`. Example:
 

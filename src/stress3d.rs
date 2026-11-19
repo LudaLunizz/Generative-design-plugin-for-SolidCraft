@@ -6,7 +6,8 @@
 //! nodes touching no material are left out, and material not connected to the supports is
 //! dropped with a warning (it would make the system singular).
 //!
-//! The system K u = f is solved matrix-free with Jacobi-preconditioned conjugate gradients.
+//! The system K u = f is solved matrix-free with preconditioned conjugate gradients: a geometric
+//! multigrid V-cycle (`mg3d`) on grids big enough to need it, plain Jacobi otherwise.
 //! Stresses are taken at voxel centres (von Mises). Units: mm, N, MPa.
 
 use std::collections::BTreeSet;
@@ -23,7 +24,7 @@ fn n3(n: &[usize; 3], k: usize) -> usize {
 }
 
 /// Node offsets of a brick in local order: bottom face (z = 0) counter-clockwise, then top.
-const CORNERS: [[usize; 3]; 8] = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
+pub(crate) const CORNERS: [[usize; 3]; 8] = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
 
 /// Stiffness of a unit cube with E = 1 (2x2x2 Gauss). A cube of edge h has h times this.
 pub fn brick_stiffness(nu: f64) -> Box<Mat24> {
@@ -272,6 +273,8 @@ pub struct Setup<'a> {
     /// Relative stiffness per grid cell (1.0 = the full material); None = all cells 1.0. Lets a
     /// printed part be modelled as a solid shell around a lighter infill core.
     pub cell_scale: Option<&'a [f64]>,
+    /// Precondition with multigrid (grids of a few thousand free DOFs or more); false = Jacobi.
+    pub multigrid: bool,
 }
 
 pub struct CaseResult {
@@ -504,6 +507,37 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
     }
     let inv: Vec<f64> = diag.iter().zip(&fixed).map(|(d, f)| if *f || *d <= 0.0 { 1.0 } else { 1.0 / d }).collect();
 
+    // Multigrid for the big grids: the coarse levels are built once and serve every load case.
+    let hierarchy = if s.multigrid {
+        let mut stiffness = vec![0.0; grid.cells()];
+        for (c, ck) in cells.iter().zip(&cell_k) {
+            if let Some(slot) = stiffness.get_mut(*c) {
+                *slot = *ck;
+            }
+        }
+        let mut support = vec![false; ndof];
+        for n in &fixed_set {
+            for d in 0..3 {
+                if let Some(slot) = support.get_mut(3 * n + d) {
+                    *slot = true;
+                }
+            }
+        }
+        let system = crate::mg3d::FineSystem { n: grid.n, ke: &ke, cell_k: &stiffness, fixed: &fixed, support: &support };
+        progress("building the multigrid levels");
+        match crate::mg3d::Hierarchy3::build(&system, crate::mg3d::Settings::default(), &crate::mg3d::FineOps { apply: &apply, inv: &inv }) {
+            Ok(h) => Some(h),
+            Err(reason) => {
+                if !reason.contains("small enough") {
+                    warnings.push(format!("multigrid not used ({reason}); falling back to the plain solver"));
+                }
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Load distribution over the load nodes: even force, couple as a rigid rotation.
     let pts: Vec<P3> = load_nodes.iter().map(|n| grid.node_pos(*n)).collect();
     let count = pts.len() as f64;
@@ -537,7 +571,15 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             }
         }
         let mut u = vec![0.0; ndof];
-        let (it, ok) = pcg(&apply, &inv, &f, &mut u, s.cg_tol, s.cg_max);
+        let precondition = |r: &[f64], z: &mut [f64]| match &hierarchy {
+            Some(h) => z.copy_from_slice(&h.precondition(&crate::mg3d::FineOps { apply: &apply, inv: &inv }, r)),
+            None => {
+                for ((zi, ri), di) in z.iter_mut().zip(r).zip(&inv) {
+                    *zi = ri * di;
+                }
+            }
+        };
+        let (it, ok) = pcg(&apply, &precondition, &f, &mut u, s.cg_tol, s.cg_max);
         // Stresses at cell centres.
         let b0 = strain_matrix(0.0, 0.0, 0.0, grid.h);
         let lam = s.e_mpa * s.nu / ((1.0 + s.nu) * (1.0 - 2.0 * s.nu));
@@ -628,7 +670,7 @@ fn solve3(a: &[[f64; 3]; 3], b: &P3) -> Option<P3> {
     Some([col(0) / det, col(1) / det, col(2) / det])
 }
 
-fn pcg(apply: &dyn Fn(&[f64], &mut [f64]), inv: &[f64], f: &[f64], u: &mut [f64], tol: f64, max: usize) -> (usize, bool) {
+fn pcg(apply: &dyn Fn(&[f64], &mut [f64]), precondition: &dyn Fn(&[f64], &mut [f64]), f: &[f64], u: &mut [f64], tol: f64, max: usize) -> (usize, bool) {
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let n = f.len();
     let mut r = vec![0.0; n];
@@ -637,7 +679,8 @@ fn pcg(apply: &dyn Fn(&[f64], &mut [f64]), inv: &[f64], f: &[f64], u: &mut [f64]
         *ri = fi - *ri;
     }
     let fnorm = dot(f, f).sqrt().max(f64::MIN_POSITIVE);
-    let mut z: Vec<f64> = r.iter().zip(inv).map(|(a, d)| a * d).collect();
+    let mut z = vec![0.0; n];
+    precondition(&r, &mut z);
     let mut p = z.clone();
     let mut rz = dot(&r, &z);
     let mut q = vec![0.0; n];
@@ -655,9 +698,7 @@ fn pcg(apply: &dyn Fn(&[f64], &mut [f64]), inv: &[f64], f: &[f64], u: &mut [f64]
             *ui += alpha * pi;
             *ri -= alpha * qi;
         }
-        for ((zi, ri), di) in z.iter_mut().zip(&r).zip(inv) {
-            *zi = ri * di;
-        }
+        precondition(&r, &mut z);
         let rz_new = dot(&r, &z);
         let beta = rz_new / rz;
         rz = rz_new;
@@ -882,7 +923,7 @@ mod tests {
         let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
         let fixed = Region::Side { axis: 0, max: false, depth: 0.01 };
         let load = Region::Side { axis: 0, max: true, depth: 0.01 };
-        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 20_000, exclude_layers: 2, cell_scale: None };
+        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid: true };
         let cases = [Case { name: "tip".into(), force: [0.0, 0.0, -10.0], moment: [0.0; 3] }];
         let a = analyse(&setup, &cases, |_| {}).unwrap();
         let r = &a.cases[0];
@@ -894,13 +935,33 @@ mod tests {
         assert!((0.8..=1.1).contains(&(r.p99_vm / 6.0)), "p99 {}", r.p99_vm);
     }
 
+    /// Multigrid and plain Jacobi give the same answer, multigrid in a fraction of the steps.
+    #[test]
+    fn multigrid_gives_the_same_answer_in_fewer_steps() {
+        let (p, t) = box_stl([0.0, 0.0, 0.0], [60.0, 12.0, 12.0]);
+        let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
+        let fixed = Region::Side { axis: 0, max: false, depth: 0.01 };
+        let load = Region::Side { axis: 0, max: true, depth: 0.01 };
+        let cases = [Case { name: "tip".into(), force: [0.0, 0.0, -10.0], moment: [0.0; 3] }];
+        let run = |multigrid: bool| {
+            let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-9, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid };
+            analyse(&setup, &cases, |_| {}).unwrap()
+        };
+        let (plain, mg) = (run(false), run(true));
+        let (a, b) = (&plain.cases[0], &mg.cases[0]);
+        assert!(a.converged && b.converged);
+        assert!((a.max_disp - b.max_disp).abs() < 1e-6 * a.max_disp, "{} vs {}", a.max_disp, b.max_disp);
+        assert!((a.p99_vm - b.p99_vm).abs() < 1e-5 * a.p99_vm, "{} vs {}", a.p99_vm, b.p99_vm);
+        assert!(b.cg_iterations * 3 < a.cg_iterations, "jacobi {} steps, multigrid {}", a.cg_iterations, b.cg_iterations);
+    }
+
     #[test]
     fn a_couple_load_solves() {
         let (p, t) = box_stl([0.0, 0.0, 0.0], [20.0, 4.0, 4.0]);
         let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
         let fixed = Region::Side { axis: 1, max: false, depth: 0.01 };
         let load = Region::Side { axis: 1, max: true, depth: 0.01 };
-        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 5000, exclude_layers: 2, cell_scale: None };
+        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 5000, exclude_layers: 2, cell_scale: None, multigrid: true };
         let cases = [Case { name: "twist".into(), force: [0.0; 3], moment: [0.0, 100.0, 0.0] }];
         assert!(analyse(&setup, &cases, |_| {}).is_ok());
     }

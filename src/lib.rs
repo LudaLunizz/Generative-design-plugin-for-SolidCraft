@@ -10,6 +10,7 @@ pub mod engine;
 pub mod gpu;
 pub mod library;
 pub mod mg2d;
+pub mod mg3d;
 pub mod outline;
 pub mod stress2d;
 pub mod stress3d;

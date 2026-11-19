@@ -54,11 +54,13 @@ fn run() -> Result<(), String> {
     let (mut walls, mut wall_first, mut wall_step, mut top_layers, mut bottom_layers, mut layer) = (8.0, 0.42, 0.45, 8.0, 3.0, 0.2);
     let (mut infill, mut infill_exp, mut z_tensile, mut z_long, mut density) = (0.25, 1.0, 30.0, 10.0, 1.24);
     let mut mass_only = false;
+    let mut multigrid = true;
     let mut cases = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match a.as_str() {
+            "--jacobi" => multigrid = false,
             "--voxel" => voxel = pn(value("--voxel")?, "--voxel")?,
             "--material" => material = value("--material")?,
             "--fix" => fix = Some(value("--fix")?),
@@ -205,7 +207,7 @@ fn run() -> Result<(), String> {
 
     let fixed = Region::Side { axis: fix_axis, max: fix_max, depth: 0.5 * voxel };
     let load = Region::Ring { point, dir, r_in: radius - 0.5 * voxel, r_out: radius + voxel };
-    let setup = Setup { grid: &grid, solid: &solid_used, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 80_000, exclude_layers: 2, cell_scale: Some(&cell_scale) };
+    let setup = Setup { grid: &grid, solid: &solid_used, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 80_000, exclude_layers: 2, cell_scale: Some(&cell_scale), multigrid };
     let result = analyse(&setup, &cases, |msg| eprintln!("  {msg} ..."))?;
     let secs = t0.elapsed().as_secs_f64();
 

@@ -1,6 +1,6 @@
 [package]
 name = "generative-design-engine"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.85"
 description = "SolidCraft plugin: engineering material library, material reports; generative design to follow"
