@@ -11,10 +11,10 @@ A [SolidCraft](https://github.com/tangency-labs/solidcraft) command plugin (`cra
 capability `commands@0.1`). Version 0.4: an engineering **material library** that becomes
 SolidCraft's own physical material cards, a per-body **material report**, a **stress check**
 for flat parts, and a **plate optimiser** that designs a lightweight plate and draws it as a sketch
-and an extrude. Next to the plugin there are three command-line tools (3D stress check,
-printed-part stress check, beam optimiser; see below).
+and an extrude. Next to the plugin there are four command-line tools (3D stress check,
+printed-part stress check, plate refine pass, beam optimiser; see below).
 
-Version 0.5.1 is tested with **SolidCraft 0.44.1**
+Version 0.6.0 is tested with **SolidCraft 0.44.1**
 (`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
@@ -74,6 +74,10 @@ draw (a test checks this). From MCP or a script: `plugin.run` with the entry nam
   checked. Run `stress-check` on the new body before relying on it. The deflection figure is a
   rough estimate (a force on one grid node).
 - The force changes the deflection estimate, not the shape: one linear material and one load.
+- **Corner rounding** (`round_mm`, since 0.6): a fillet of that radius where members meet. It
+  only adds material (a few per cent), so no member gets thinner; holes narrower than the fillet
+  close. For a finer and rounder result the reply points to the refine pass (`plate_refine`
+  below), which runs outside SolidCraft on the GPU.
 
 Allowable stress = yield strength / safety factor, or tensile strength / safety factor for
 materials without a yield value (the printed plastics). **This is not a stress analysis**: the
@@ -156,6 +160,7 @@ These run natively (no plugin limits on time or memory) and are built with
 |---|---|
 | `stress3d` | 3D voxel stress check of an STL part: majority-vote voxelisation, multigrid-preconditioned CG solve (`--jacobi` for the plain Jacobi solver), von Mises heat maps (PNG) and a report (`report.json`) with the safety factor against a library material. |
 | `stress3d_printed` | The same for a **3D-printed** part: solid walls and top/bottom skins around a lighter infill core, with layers along z. Infill stiffness is `infill^exp` (exp 1 = upper bound, exp 2 = lower bound). |
+| `plate_refine` | The plate optimiser's **refine pass**: the same optimisation as `optimise-plate` at up to 800 cells across, on the GPU (busy share capped, default 80 %), with members at least `min_member` mm wide and the inside corners rounded (`round`, mm). Writes a script that builds the body in SolidCraft. |
 | `beam_opt` | Lightest plate-truss for a long cantilever beam: SIMP topology optimisation with a min-member filter, then strut and sideways (lateral-torsional) buckling checks. |
 
 The 3D tools use a geometric multigrid preconditioner (`src/mg3d.rs`): Galerkin coarse matrices per
@@ -166,6 +171,25 @@ voxels of 1.5 mm, PETG) the CG steps drop from about 1,850 to about 90 and the r
 at 2.5 mm voxels from 14.5 s to 6 s; the printed-part tool at 2 mm from 47 s to 24 s. Grids small
 enough for a plain solve (a few thousand free DOFs) skip it, and a grid whose first coarse level
 would need more than 4 GB falls back to Jacobi with a warning.
+
+**Refine pass (`plate_refine`).** After a plate from `optimise-plate`, this redoes it finer and
+rounder outside SolidCraft's limits. Build it with the GPU feature, run it, then run the script it
+writes in the open design (`solidcraft-cli run refine.json`, or the MCP `batch {"path": ...}`):
+
+```bash
+cargo build --release --features gpu --bin plate_refine
+target/release/plate_refine width=200 height=100 thickness=10 material=petg-printed share=0.4 \
+  cells=480 iterations=150 min_member=3 round=4 name="Refined plate" --out refine.json
+```
+
+The GPU limit (`gpu_max`, default 80) counts the whole GPU, the desktop included: after every
+solver step the tool pauses for a share of the step's time, and where the kernel reports the
+GPU's busy share (amdgpu `gpu_busy_percent`) it lengthens the pauses while the total is over the
+limit. Measured on an RX 5700 XT with the desktop running: 200 x 100 mm at 480 x 240 cells,
+150 iterations in about 19 s, GPU at most 80 % busy (mean 38 %). Without the limit the same run
+takes about 11 s and touches 90 %. Rounding is a morphological closing (grow by the fillet radius,
+then shrink by it) on an exact distance transform (Felzenszwalb and Huttenlocher), so it only adds
+material: no member gets thinner, holes narrower than the fillet close.
 
 Usage is in the header comment of each file in `src/bin/`. Example:
 

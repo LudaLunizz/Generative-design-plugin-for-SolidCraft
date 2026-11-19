@@ -55,7 +55,7 @@ pub fn execute<H: Host>(host: &mut H, entry: &str, params: &str) -> Result<Strin
         "material-report" => material_report(host, &library, parse(params)?)?,
         "solver-benchmark" => solver_benchmark(host, parse(params)?)?,
         "stress-check" => stress_check(host, &library, parse(params)?)?,
-        "optimise-plate" => optimise_plate(host, &library, parse(params)?)?,
+        "optimise-plate" => optimise_plate(host, &library, parse(params)?, PlateLimits::PLUGIN)?,
         other => return Err(Failure::input("entry", format!("unknown entry {:?}", truncate(other, 64)))),
     };
     serde_json::to_string(&result).map_err(|e| Failure::Internal(format!("could not encode the result: {e}")))
@@ -731,7 +731,26 @@ pub struct PlateParams {
     pub cells: usize,
     pub iterations: usize,
     pub filter_radius: f64,
+    /// Fillet radius where members meet, mm (0 = none).
+    pub round_mm: f64,
     pub name: String,
+}
+
+/// How big a plate run may get: the plugin's limits (fuel and 30 s inside SolidCraft) or larger
+/// ones for the native refine pass, which may also solve on the GPU.
+#[derive(Clone, Copy, Debug)]
+pub struct PlateLimits {
+    pub max_cells: usize,
+    pub max_work: usize,
+    pub max_across: usize,
+    pub max_iterations: usize,
+    /// Largest filter radius (smallest member) in cells.
+    pub max_filter: f64,
+    pub solver: crate::topo2d::Solver,
+}
+
+impl PlateLimits {
+    pub const PLUGIN: PlateLimits = PlateLimits { max_cells: MAX_PLATE_CELLS, max_work: MAX_PLATE_WORK, max_across: 240, max_iterations: 150, max_filter: 4.0, solver: crate::topo2d::Solver::Multigrid };
 }
 
 impl Default for PlateParams {
@@ -747,6 +766,7 @@ impl Default for PlateParams {
             cells: 80,
             iterations: 60,
             filter_radius: 2.0,
+            round_mm: 0.0,
             name: "Optimised plate".into(),
         }
     }
@@ -764,9 +784,9 @@ fn in_range<E>(field: &str, v: f64, lo: f64, hi: f64) -> Result<f64, Failure<E>>
 /// the whole grid stays within [`MAX_PLATE_CELLS`]). Both counts are rounded to a multiple of 4
 /// (8 or 16 for tall grids), so the multigrid can halve the grid far enough for a cheap direct
 /// solve at the bottom; the height follows to whole cells.
-fn plate_grid(width: f64, height: f64, cells: usize) -> (usize, usize, f64) {
+fn plate_grid(width: f64, height: f64, cells: usize, max_cells: usize) -> (usize, usize, f64) {
     let ratio = height / width;
-    let max_nx = (MAX_PLATE_CELLS as f64 / ratio).sqrt().floor() as usize;
+    let max_nx = (max_cells as f64 / ratio).sqrt().floor() as usize;
     let nx0 = cells.min(max_nx.max(1));
     let unit = |n: f64| if n <= 160.0 { 4.0 } else if n <= 320.0 { 8.0 } else { 16.0 };
     let snap = |v: f64, u: f64| ((u * (v / u).round()) as usize).max(u as usize);
@@ -777,21 +797,24 @@ fn plate_grid(width: f64, height: f64, cells: usize) -> (usize, usize, f64) {
     (nx, snap(height / cell, u), cell)
 }
 
-fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> Result<Value, Failure<H::Error>> {
+/// Optimises a plate and draws it in the design. `limits` are the plugin's inside SolidCraft; the
+/// native refine pass (`plate_refine`) passes larger ones and the GPU solver.
+pub fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams, limits: PlateLimits) -> Result<Value, Failure<H::Error>> {
     use crate::outline::{Mask, Piece, Shape, smooth_outlines};
-    use crate::topo2d::{LoadCase, Problem, Solver, analyse, optimise};
+    use crate::topo2d::{LoadCase, Problem, analyse, optimise};
 
     let width = in_range("width_mm", p.width_mm, 1.0, 10_000.0)?;
     let height = in_range("height_mm", p.height_mm, 1.0, 10_000.0)?;
     let thickness = in_range("thickness_mm", p.thickness_mm, 0.1, 1_000.0)?;
     let force = in_range("force_n", p.force_n, 0.001, 1e9)?;
     let share = in_range("volume_share", p.volume_share, 0.1, 0.9)?;
-    let radius = in_range("filter_radius", p.filter_radius, 1.0, 4.0)?;
-    if !(20..=240).contains(&p.cells) {
-        return Err(Failure::input("cells", "expected 20 to 240"));
+    let radius = in_range("filter_radius", p.filter_radius, 1.0, limits.max_filter)?;
+    let round_mm = in_range("round_mm", p.round_mm, 0.0, 10_000.0)?;
+    if !(20..=limits.max_across).contains(&p.cells) {
+        return Err(Failure::input("cells", format!("expected 20 to {}", limits.max_across)));
     }
-    if !(10..=150).contains(&p.iterations) {
-        return Err(Failure::input("iterations", "expected 10 to 150"));
+    if !(10..=limits.max_iterations).contains(&p.iterations) {
+        return Err(Failure::input("iterations", format!("expected 10 to {}", limits.max_iterations)));
     }
     let name = p.name.trim().to_string();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
@@ -811,7 +834,7 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
         return Err(Failure::Internal(format!("{} lacks density or elasticity", material.id)));
     };
 
-    let (nx, ny, cell) = plate_grid(width, height, p.cells);
+    let (nx, ny, cell) = plate_grid(width, height, p.cells, limits.max_cells);
     if nx < 8 {
         return Err(Failure::input("height_mm", "too tall and narrow for the grid: keep the height under about 150 times the width"));
     }
@@ -821,10 +844,10 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
     if !crate::mg2d::coarsest_is_direct_for(nx, ny) {
         return Err(Failure::input("height_mm", "too tall and narrow for the solver: make the plate wider compared with its height, or lower the cells"));
     }
-    if nx * ny * p.iterations > MAX_PLATE_WORK {
+    if nx * ny * p.iterations > limits.max_work {
         return Err(Failure::input(
             "iterations",
-            format!("{nx} x {ny} cells times {} iterations is more work than SolidCraft allows a plugin ({MAX_PLATE_WORK} cell-iterations at most): lower the iterations or the cells", p.iterations),
+            format!("{nx} x {ny} cells times {} iterations is more work than this run allows ({} cell-iterations at most): lower the iterations or the cells", p.iterations, limits.max_work),
         ));
     }
     let height_used = ny as f64 * cell;
@@ -847,7 +870,7 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
         // 160 x 80) with half the solver steps; measured in speed round 2.
         cg_tol: 1e-4,
         cg_max: 20_000,
-        solver: Solver::Multigrid,
+        solver: limits.solver,
         beta_final: 0.0,
         beta_every: 30,
         tip_rows: 0,
@@ -872,6 +895,7 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
     if mask.count() == 0 {
         return Err(Failure::input("params", "the optimiser left no material at the fixed edge; raise volume_share or iterations"));
     }
+    let rounded = mask.round_inside_corners(round_mm / cell);
     let filled = mask.close_diagonal_contacts().map_err(Failure::Internal)?;
     let loops = smooth_outlines(&mask).map_err(Failure::Internal)?;
     let points: usize = loops.iter().map(|o| o.drawn_points()).sum();
@@ -948,7 +972,7 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
         warnings.push(format!("The grid has whole cells in steps of 4, so the plate is {:.1} mm high instead of {height:.1} mm; more cells follow the height more closely.", height_used));
     }
     if nx < p.cells {
-        warnings.push(format!("Used {nx} cells across (not {}) so that the grid stays at {MAX_PLATE_CELLS} cells.", p.cells));
+        warnings.push(format!("Used {nx} cells across (not {}) so that the grid stays at {} cells.", p.cells, limits.max_cells));
     }
     if !out.converged {
         warnings.push(format!("The optimiser had not settled after {} iterations; more iterations may change the shape.", out.history.len()));
@@ -998,10 +1022,12 @@ fn optimise_plate<H: Host>(host: &mut H, library: &Library, p: PlateParams) -> R
             "note": "Linear elastic plane stress on the grid, the force on one node: a rough figure, and a point load makes it larger than a real load spread over a face.",
         },
         "filled_diagonal_cells": filled,
+        "rounding": { "fillet_mm": round_mm, "cells_added": rounded },
+        "refine": "For a finer, rounder result, run the refine pass: plate_refine (a command-line tool in this repository) with the same values; it solves on the GPU at up to 800 cells across, keeps members at least min_member mm wide, rounds the inside corners (round, mm) and writes a script that builds the body.",
         "dropped_cells": dropped,
         "warnings": warnings,
         "next": "This is stiffness-optimised only: strength, stress concentrations and buckling are NOT checked. Run stress-check on the new body (fixed: -x, and the load face) before relying on it.",
-        "method": "2D SIMP topology optimisation (density filter, optimality criteria, multigrid solver) of a plate of one thickness; cells above 0.5 density are material; only what is joined to the fixed edge is kept; the cell boundary is smoothed (Taubin's method, the plate's own edges kept straight) and drawn as sketch splines, with straight lines along the plate's edges, then extruded. A design aid, not a certified analysis.",
+        "method": "2D SIMP topology optimisation (density filter, optimality criteria, multigrid solver) of a plate of one thickness; cells above 0.5 density are material; only what is joined to the fixed edge is kept; where round_mm is set, the inside corners get fillets of that radius (a morphological closing, which only adds material); the cell boundary is smoothed (Taubin's method, the plate's own edges kept straight) and drawn as sketch splines, with straight lines along the plate's edges, then extruded. A design aid, not a certified analysis.",
     }))
 }
 
@@ -1393,6 +1419,22 @@ mod tests {
     }
 
     #[test]
+    fn optimise_plate_rounds_inside_corners_when_asked() {
+        let mut plain = Fake::default();
+        let a = run(&mut plain, "optimise-plate", small_plate()).unwrap();
+        let mut round = Fake::default();
+        let mut p = small_plate();
+        p["round_mm"] = json!(10.0);
+        let b = run(&mut round, "optimise-plate", p).unwrap();
+        assert_eq!(a["rounding"]["cells_added"], 0);
+        assert!(b["rounding"]["cells_added"].as_u64().unwrap() > 0, "{}", b["rounding"]);
+        assert!(b["design"]["area_mm2"].as_f64().unwrap() > a["design"]["area_mm2"].as_f64().unwrap());
+        let mut bad = small_plate();
+        bad["round_mm"] = json!(-1.0);
+        assert!(run(&mut Fake::default(), "optimise-plate", bad).is_err());
+    }
+
+    #[test]
     fn optimise_plate_mbb_runs_too() {
         let mut host = Fake::default();
         let mut p = small_plate();
@@ -1455,16 +1497,16 @@ mod tests {
     #[test]
     fn plate_grid_keeps_the_cell_count_down() {
         for (w, h, c) in [(120.0, 120.0, 240), (10_000.0, 10_000.0, 240), (200.0, 100.0, 240), (10_000.0, 1.0, 20), (123.4, 77.7, 97)] {
-            let (nx, ny, cell) = plate_grid(w, h, c);
+            let (nx, ny, cell) = plate_grid(w, h, c, MAX_PLATE_CELLS);
             assert!(nx >= 1 && nx <= c);
             assert!(nx % 4 == 0 && ny % 4 == 0, "{w}x{h}: {nx} x {ny}");
             assert!(nx * ny <= MAX_PLATE_CELLS + MAX_PLATE_CELLS / 10, "{w}x{h}: {nx} x {ny}");
             assert!(cell > 0.0 && cell.is_finite());
         }
-        assert_eq!(plate_grid(200.0, 100.0, 80), (80, 40, 2.5));
+        assert_eq!(plate_grid(200.0, 100.0, 80, MAX_PLATE_CELLS), (80, 40, 2.5));
         assert!(crate::mg2d::coarsest_is_direct_for(80, 40) && crate::mg2d::coarsest_is_direct_for(240, 120));
         assert!(!crate::mg2d::coarsest_is_direct_for(100, 3000));
-        let (nx, ny, _) = plate_grid(1.0, 10_000.0, 120);
+        let (nx, ny, _) = plate_grid(1.0, 10_000.0, 120, MAX_PLATE_CELLS);
         assert!(ny > 2000 || !crate::mg2d::coarsest_is_direct_for(nx, ny), "a needle is refused by the entry: {nx} x {ny}");
     }
 

@@ -64,6 +64,33 @@ impl Mask {
         self.density.get(iu * self.ny + ju).copied().unwrap_or(0.0)
     }
 
+    /// Rounds every inside corner (where members meet) with a fillet of `radius` cells: a
+    /// morphological closing (grow by the radius, then shrink by it) with exact Euclidean
+    /// distances. It only adds material, so no member gets thinner; holes narrower than the fillet
+    /// fill in. The plate's own edges are not shrunk (outside the grid counts as neither solid nor
+    /// void). The densities are replaced by the distance field, so the outline then follows the
+    /// round fillets between the cells. Returns the cells added.
+    pub fn round_inside_corners(&mut self, radius: f64) -> usize {
+        if !(radius.is_finite() && radius > 0.0) {
+            return 0;
+        }
+        let before = self.count();
+        let (nx, ny) = (self.nx, self.ny);
+        // Grow: every cell within the radius of material.
+        let to_solid = squared_distance(&self.solid, nx, ny);
+        let reach = (radius + 0.5) * (radius + 0.5);
+        let grown_void: Vec<bool> = to_solid.iter().map(|&d| d > reach).collect();
+        // Shrink: keep cells farther than the radius from the grown shape's void.
+        let to_void = squared_distance(&grown_void, nx, ny);
+        // Distance r + 1 is the last row of an unchanged edge and r the first void row, so the
+        // 0.5 level sits at r + 1/2: density 1 and 0 there put the outline midway, as before.
+        let old = std::mem::take(&mut self.solid);
+        self.density = to_void.iter().zip(&old).map(|(&d, &was)| if was { 1.0 } else { (d.sqrt() - radius).clamp(0.0, 1.0) }).collect();
+        // Never removes material (grow and shrink match, this only guards rounding at the edges).
+        self.solid = self.density.iter().zip(&old).map(|(&v, &was)| was || v > 0.5).collect();
+        self.count().saturating_sub(before)
+    }
+
     pub fn count(&self) -> usize {
         self.solid.iter().filter(|&&s| s).count()
     }
@@ -223,6 +250,79 @@ impl Outline {
             Shape::Mixed(pieces) => pieces.iter().map(|p| match p { Piece::Line(v) | Piece::Curve(v) => v.len() }).sum(),
         }
     }
+}
+
+/// Squared Euclidean distance (in cells, centre to centre) from every cell to the nearest cell
+/// that is `true` in `feature` (column-major, `i * ny + j`); `f64::INFINITY` when there is none.
+/// The exact separable transform of Felzenszwalb and Huttenlocher ("Distance transforms of sampled
+/// functions", 2012): a 1D lower envelope of parabolas along each column, then along each row.
+fn squared_distance(feature: &[bool], nx: usize, ny: usize) -> Vec<f64> {
+    let mut d: Vec<f64> = feature.iter().map(|&f| if f { 0.0 } else { f64::INFINITY }).collect();
+    let mut line = Vec::new();
+    // Along y (each column is contiguous).
+    for col in d.chunks_mut(ny.max(1)) {
+        line.clear();
+        line.extend_from_slice(col);
+        let out = envelope(&line);
+        col.copy_from_slice(&out);
+    }
+    // Along x (stride ny).
+    for j in 0..ny {
+        line.clear();
+        line.extend((0..nx).map(|i| d.get(i * ny + j).copied().unwrap_or(f64::INFINITY)));
+        for (i, v) in envelope(&line).into_iter().enumerate() {
+            if let Some(slot) = d.get_mut(i * ny + j) {
+                *slot = v;
+            }
+        }
+    }
+    d
+}
+
+/// 1D squared distance transform: out[q] = min_p (q - p)^2 + f[p].
+fn envelope(f: &[f64]) -> Vec<f64> {
+    let n = f.len();
+    let mut out = vec![f64::INFINITY; n];
+    // Parabola vertices (positions) and the boundaries between them.
+    let mut v: Vec<usize> = Vec::with_capacity(n);
+    let mut z: Vec<f64> = Vec::with_capacity(n + 1);
+    let fv = |p: usize| f.get(p).copied().unwrap_or(f64::INFINITY);
+    for q in 0..n {
+        let fq = fv(q);
+        if !fq.is_finite() {
+            continue;
+        }
+        loop {
+            let Some(&p) = v.last() else {
+                v.push(q);
+                z.clear();
+                z.push(f64::NEG_INFINITY);
+                break;
+            };
+            let s = ((fq + (q * q) as f64) - (fv(p) + (p * p) as f64)) / (2.0 * (q as f64 - p as f64));
+            if z.last().is_some_and(|&zl| s <= zl) {
+                v.pop();
+                z.pop();
+                continue;
+            }
+            v.push(q);
+            z.push(s);
+            break;
+        }
+    }
+    if v.is_empty() {
+        return out;
+    }
+    let mut k = 0usize;
+    for (q, slot) in out.iter_mut().enumerate() {
+        while z.get(k + 1).is_some_and(|&zn| zn < q as f64) {
+            k += 1;
+        }
+        if let Some(&p) = v.get(k) {
+            *slot = (q as f64 - p as f64).powi(2) + fv(p);
+        }
+    }
+    out
 }
 
 /// Taubin smoothing weights (Taubin 1995, "A signal processing approach to fair surface design"):
@@ -671,6 +771,69 @@ mod tests {
         assert!(r.len() <= MAX_CURVE_POINTS, "{}", r.len());
         assert_eq!(r[0], run[0]);
         assert_eq!(*r.last().unwrap(), *run.last().unwrap());
+    }
+
+    #[test]
+    fn the_distance_transform_matches_brute_force() {
+        let (nx, ny) = (13usize, 9usize);
+        let mut s = 99u64;
+        let feature: Vec<bool> = (0..nx * ny)
+            .map(|_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (s >> 33) % 100 < 8
+            })
+            .collect();
+        let fast = squared_distance(&feature, nx, ny);
+        for i in 0..nx {
+            for j in 0..ny {
+                let mut best = f64::INFINITY;
+                for a in 0..nx {
+                    for b in 0..ny {
+                        if feature[a * ny + b] {
+                            best = best.min(((i as f64 - a as f64).powi(2)) + ((j as f64 - b as f64).powi(2)));
+                        }
+                    }
+                }
+                assert_eq!(fast[i * ny + j], best, "cell ({i}, {j})");
+            }
+        }
+        assert!(squared_distance(&[false; 6], 2, 3).iter().all(|d| d.is_infinite()));
+    }
+
+    /// Two bars meeting at a right angle: rounding fills the inside corner with a fillet of about
+    /// the radius (area of a fillet r: r^2 (1 - pi/4)), keeps the bars and the plate edge as they were.
+    #[test]
+    fn rounding_puts_a_fillet_in_an_inside_corner() {
+        let (nx, ny, w) = (40usize, 40usize, 6usize);
+        let mut d = vec![0.0; nx * ny];
+        for i in 0..nx {
+            for j in 0..ny {
+                if i < w || j < w {
+                    d[i * ny + j] = 1.0;
+                }
+            }
+        }
+        let mut m = Mask::from_density(&d, nx, ny, 0.5).unwrap();
+        let before = m.clone();
+        let r = 8.0;
+        let added = m.round_inside_corners(r);
+        let fillet = r * r * (1.0 - std::f64::consts::PI / 4.0);
+        // On a grid the closing disc is measured between cell centres, so it lands near, not on, the ideal.
+        assert!((0.5 * fillet..2.0 * fillet).contains(&(added as f64)), "added {added} cells, a fillet is {fillet:.1}");
+        for i in 0..nx as i64 {
+            for j in 0..ny as i64 {
+                assert!(!before.get(i, j) || m.get(i, j), "rounding removed cell ({i}, {j})");
+            }
+        }
+        // Far from the corner nothing changes, and the outline still matches the cell count.
+        assert!(!m.get(20, 20) && m.get(0, 39) && m.get(39, 0));
+        let l = smooth_outlines(&m).unwrap();
+        let area: f64 = l.iter().map(|o| o.area).sum();
+        assert!((area - m.count() as f64).abs() / (m.count() as f64) < 0.02, "area {area} vs {} cells", m.count());
+        // No rounding asked: nothing changes.
+        let mut same = before.clone();
+        assert_eq!(same.round_inside_corners(0.0), 0);
+        assert_eq!(same, before);
     }
 
     #[test]
