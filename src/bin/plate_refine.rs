@@ -5,7 +5,9 @@
 //!
 //! plate_refine [key=value ...] --out SCRIPT.json
 //!   width=200 height=100 thickness=10 material=aluminium-6061-t6 load=cantilever share=0.4
-//!   cells=480 iterations=150 min_member=3 (mm; the filter radius, so it holds at any grid)
+//!   cells=480 iterations=3000 (a limit: the optimiser stops as soon as the design has settled,
+//!   which took 1,340 iterations at 480 x 240 cells)
+//!   min_member=3 (mm; the filter radius, so it holds at any grid)
 //!   round=4 (fillet radius where members meet, mm) force=500
 //!   name="Refined plate"
 //!   gpu=1 (default; needs a build with --features gpu, else the CPU multigrid is used)
@@ -96,7 +98,7 @@ fn main() {
         force_n: num("force", 500.0),
         volume_share: num("share", 0.4),
         cells: num("cells", 480.0) as usize,
-        iterations: num("iterations", 150.0) as usize,
+        iterations: num("iterations", 3000.0) as usize,
         // The plugin counts the filter in cells; here it is mm, so finer grids keep members printable.
         filter_radius: (num("min_member", 3.0) / (num("width", 200.0) / num("cells", 480.0))).max(1.0),
         round_mm: num("round", 4.0),
@@ -104,9 +106,9 @@ fn main() {
     };
     let limits = PlateLimits {
         max_cells: 400_000,
-        max_work: 400_000 * 300,
+        max_work: 400_000 * 3000,
         max_across: 800,
-        max_iterations: 300,
+        max_iterations: 3000,
         max_filter: 24.0,
         solver: if gpu { Solver::Gpu } else { Solver::Multigrid },
     };
