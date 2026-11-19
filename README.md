@@ -14,8 +14,9 @@ for flat parts, and a **plate optimiser** that designs a lightweight plate and d
 and an extrude. Next to the plugin there are four command-line tools (3D stress check,
 printed-part stress check, plate refine pass, beam optimiser; see below).
 
-Version 0.6.0 is tested with **SolidCraft 0.44.1**
-(`tests/cli-test.sh`); 0.3.x also ran on 0.43.0.
+Version 0.6.0 is tested with **SolidCraft 0.45.0** (`tests/cli-test.sh`, corner rounding, the
+`plate_refine` build script, and `solidcraft-cli plugin check`: no problems) and with 0.44.1;
+0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
 > check them before anyone relies on them for a design, manufacturing or safety decision. The
