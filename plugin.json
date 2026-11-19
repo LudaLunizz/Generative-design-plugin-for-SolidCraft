@@ -1,7 +1,7 @@
 {
   "id": "gen-design-engine",
   "name": "Generative Design Engine",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Engineering material library (sourced cards), material report, a 2D stress check of flat parts with safety factor, and a plate optimiser that draws its result as a sketch and an extrude.",
   "capabilities": [
     "commands@0.1"

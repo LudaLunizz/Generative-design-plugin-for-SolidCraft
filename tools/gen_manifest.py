@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
