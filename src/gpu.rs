@@ -582,6 +582,7 @@ impl GpuMg {
         let mut it = 0;
         let converged;
         loop {
+            let step_start = std::time::Instant::now();
             let before = finish_up(first);
             first = false;
             self.queue.submit([before.finish()]);
@@ -592,6 +593,8 @@ impl GpuMg {
                 run(pass, &self.pipes.update_ur, 0, dofs);
                 down(pass);
             }, Some(1)))?;
+            // Every step ends in a sync, so pausing here keeps even short stretches under the limit.
+            throttle(step_start.elapsed());
             if s_prev[3].sqrt() <= tol * fnorm || s_prev[4] != 0.0 || it >= max {
                 // This step's update has already run; it only lowers the residual further.
                 converged = s_prev[3].sqrt() <= tol * fnorm;
@@ -627,6 +630,62 @@ impl GpuMg {
         out.unmap();
         Ok((GpuSolve { u: u_host, iterations: it, converged, levels: depth }, times))
     }
+}
+
+/// Largest share of the time the GPU may be busy, in percent (100 = no limit). See [`set_max_busy`].
+static MAX_BUSY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+/// Limits the GPU to about `percent` busy, counting everything else that uses it (the desktop,
+/// open windows). After every solver step (a millisecond or two) the solve waits `step time x k`.
+/// `k` starts at `(100 - percent) / percent`, which alone holds this program's own share to the
+/// limit; where the kernel reports the GPU's total busy share (amdgpu:
+/// `/sys/class/drm/card*/device/gpu_busy_percent`) it is read every few steps and `k` grows while
+/// the total is over the limit and shrinks back when it is well under.
+pub fn set_max_busy(percent: u32) {
+    MAX_BUSY.store(percent.clamp(1, 100), std::sync::atomic::Ordering::Relaxed);
+}
+
+struct Throttle {
+    k: f64,
+    steps: u32,
+    busy_files: Vec<std::path::PathBuf>,
+}
+
+static THROTTLE: std::sync::Mutex<Option<Throttle>> = std::sync::Mutex::new(None);
+
+/// The GPU busy share in percent as the kernel reports it (the highest of the GPUs that report).
+fn total_busy(files: &[std::path::PathBuf]) -> Option<u32> {
+    files.iter().filter_map(|f| std::fs::read_to_string(f).ok()?.trim().parse::<u32>().ok()).max()
+}
+
+fn throttle(step: std::time::Duration) {
+    let p = MAX_BUSY.load(std::sync::atomic::Ordering::Relaxed).clamp(1, 100);
+    if p >= 100 {
+        return;
+    }
+    let base = f64::from(100 - p) / f64::from(p);
+    let wait = {
+        let Ok(mut guard) = THROTTLE.lock() else { return };
+        let t = guard.get_or_insert_with(|| {
+            let busy_files = std::fs::read_dir("/sys/class/drm")
+                .map(|dir| dir.filter_map(Result::ok).map(|e| e.path().join("device/gpu_busy_percent")).filter(|f| f.is_file()).collect())
+                .unwrap_or_default();
+            Throttle { k: base, steps: 0, busy_files }
+        });
+        t.steps = t.steps.wrapping_add(1);
+        // Aim 5 points under the limit: the kernel's figure lags a little behind.
+        if t.steps % 4 == 0
+            && let Some(total) = total_busy(&t.busy_files)
+        {
+            if total + 5 > p {
+                t.k = (t.k * 1.5 + 0.1).min(50.0);
+            } else if total + 20 < p {
+                t.k = (t.k * 0.85).max(base);
+            }
+        }
+        step.mul_f64(t.k)
+    };
+    std::thread::sleep(wait);
 }
 
 /// One GPU for the whole process, opened on first use. Solves from several threads take turns.

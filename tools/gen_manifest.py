@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
@@ -78,6 +78,8 @@ manifest = {
                            "description": "More cells give finer detail and take longer; rounded to a multiple of 4; the whole grid is capped at 30000 cells"},
                  "iterations": {"type": "integer", "title": "Design iterations", "default": 60, "minimum": 10, "maximum": 150},
                  "filter_radius": {"type": "number", "title": "Smallest member (cells)", "default": 2, "minimum": 1, "maximum": 4},
+                 "round_mm": {"type": "number", "title": "Corner rounding", "unit": "mm", "default": 0, "minimum": 0, "maximum": 10000,
+                              "description": "Fillet radius where members meet (0 = none); adds a little material, never thins a member"},
                  "name": {"type": "string", "title": "Body name", "default": "Optimised plate"}}}},
             {"name": "solver-benchmark", "effect": "read",
              "input_schema": {"type": "object", "properties": {
