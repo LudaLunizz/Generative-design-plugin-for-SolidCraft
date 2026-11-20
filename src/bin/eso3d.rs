@@ -11,13 +11,17 @@
 //!   target=0.12 step=0.04 sf=4             stop at this share of the frustum, remove 4 % per round, keep SF
 //!   material=petg-printed out=DIR
 //!   check=FILE.stl [check_voxel=1.25]      only check an STL (same supports, loads, material) on a finer grid, heat maps in out/
+//!   bars=1 [blend=3 bar_res=0.75 rounds=4] every pillar of the design (also with from=DIR) becomes a round bar of the same
+//!                                          volume between its two ends; checked on check_voxel, bars below sf grow
+//!                                          (at most `rounds` times); fillets of `blend` mm, mesh grid bar_res mm
+//! check and bars also write CASE-stress.ply (colour per point, for Blender) and CASE-stress-{iso,side,top}.png.
 //! Stops at the target share or just before the safety factor (away from the load/support zones) drops
 //! below sf, and writes DIR/bracket.stl (voxel faces, wall at x=0, Z up), report.json and heat maps.
 
 #![allow(clippy::indexing_slicing, clippy::cast_precision_loss)] // command-line tool: indices come from the grid itself
 
 use generative_design_engine::library::Library;
-use generative_design_engine::stress3d::{Case, Grid, Region, Setup, analyse, png, projection, read_stl, voxelize};
+use generative_design_engine::stress3d::{Analysis, Case, Grid, Region, Setup, analyse, heat, png, projection, read_stl, voxelize};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -206,6 +210,26 @@ fn smooth(grid: &Grid, solid: &[bool], keep: &[bool], passes: usize, holes: &[[f
     // The plate field is bent so that its 0.5 face lands exactly on the level.
     // The holes: linear in their distance with the level on the hole wall, so the cut lands on the true circle.
     let field: Vec<f64> = fa.iter().zip(&fp).zip(&hd).map(|((av, pv), d)| av.max(if *pv >= 0.5 { thr + (pv - 0.5) * 2.0 * (1.0 - thr) } else { pv * 2.0 * thr }).min(thr + d / hf)).collect();
+    let mut tris = march(&field, fd, &pos, thr);
+    for p in tris.iter_mut().flatten() {
+        p[0] = p[0].clamp(0.0, reach);
+    }
+    finish(&mut tris, holes, r, xb);
+    let vol = volume(&tris);
+    (tris, thr, vol)
+    };
+    let (mut target, mut res) = (want, build(want));
+    for _ in 0..3 {
+        target *= want / res.2;
+        res = build(target);
+    }
+    res
+}
+
+/// Marching tetrahedra over a node field on a regular grid (`fd` nodes per axis, node position from `pos`):
+/// the surface where the field crosses `thr`, wound outward (inside = field >= thr).
+fn march(field: &[f64], fd: [usize; 3], pos: &dyn Fn(usize, usize, usize) -> [f64; 3], thr: f64) -> Vec<[[f64; 3]; 3]> {
+    let nidx = |a: usize, b: usize, c: usize| (a * fd[1] + b) * fd[2] + c;
     // Six tetrahedra per cell around the diagonal 0-7.
     let tets = [[0, 1, 3, 7], [0, 3, 2, 7], [0, 2, 6, 7], [0, 6, 4, 7], [0, 4, 5, 7], [0, 5, 1, 7]];
     let mut tris = Vec::new();
@@ -257,15 +281,17 @@ fn smooth(grid: &Grid, solid: &[bool], keep: &[bool], passes: usize, holes: &[[f
                         if n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2] < 0.0 {
                             t.swap(1, 2);
                         }
-                        for p in &mut t {
-                            p[0] = p[0].clamp(0.0, reach);
-                        }
                         tris.push(t);
                     }
                 }
             }
         }
     }
+    tris
+}
+
+/// Puts corners that fell inside a screw hole back on its wall and drops triangles pressed flat to nothing.
+fn finish(tris: &mut Vec<[[f64; 3]; 3]>, holes: &[[f64; 2]], r: [f64; 2], xb: f64) {
     // Linear crossings fall a little inside a round hole (about 0.1 mm here): put those corners on the hole wall.
     for p in tris.iter_mut().flatten().filter(|p| p[0] <= xb + 1e-9) {
         for [y, z] in holes {
@@ -282,15 +308,419 @@ fn smooth(grid: &Grid, solid: &[bool], keep: &[bool], passes: usize, holes: &[[f
         let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
         n.iter().map(|v| v * v).sum::<f64>() > 1e-12
     });
-    let vol = tris.iter().map(|t| (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1]) - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0]) + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / 6.0).sum::<f64>();
-    (tris, thr, vol)
-    };
-    let (mut target, mut res) = (want, build(want));
-    for _ in 0..3 {
-        target *= want / res.2;
-        res = build(target);
+}
+
+fn volume(tris: &[[[f64; 3]; 3]]) -> f64 {
+    tris.iter().map(|t| (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1]) - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0]) + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / 6.0).sum::<f64>()
+}
+
+// ---- Round bars: every pillar of the voxel design becomes a round bar of the same volume ----
+
+/// The 26 neighbour offsets.
+fn n26() -> impl Iterator<Item = [i64; 3]> {
+    (0..27i64).filter(|q| *q != 13).map(|q| [q / 9 - 1, (q / 3) % 3 - 1, q % 3 - 1])
+}
+
+fn step(grid: &Grid, c: usize, d: [i64; 3]) -> Option<usize> {
+    let ijk = grid.cell_ijk(c);
+    let mut o = [0usize; 3];
+    for a in 0..3 {
+        let v = ijk[a] as i64 + d[a];
+        if v < 0 || v as usize >= grid.n[a] {
+            return None;
+        }
+        o[a] = v as usize;
     }
-    res
+    Some(grid.cell_index(o[0], o[1], o[2]))
+}
+
+/// Removing the centre of this 3x3x3 block (index 9a + 3b + c) changes no topology: the solid around it is one
+/// 26-connected piece and the empty space next to it one 6-connected piece (Bertrand and Malandain's test).
+fn simple(nb: &[bool; 27]) -> bool {
+    let d = |q: usize| [q / 9, (q / 3) % 3, q % 3].map(|v| v as i64 - 1);
+    let far = |q: usize| d(q).iter().map(|v| v.abs()).sum::<i64>();
+    let gap = |q: usize, r: usize| { let (a, b) = (d(q), d(r)); [0, 1, 2].map(|i| (a[i] - b[i]).abs()) };
+    // pieces of `member` (cells joined by `touch`) that hold at least one cell where `counts`
+    let pieces = |member: &dyn Fn(usize) -> bool, touch: &dyn Fn(usize, usize) -> bool, counts: &dyn Fn(usize) -> bool| {
+        let (mut seen, mut n) = ([false; 27], 0);
+        for s in 0..27 {
+            if !member(s) || seen[s] {
+                continue;
+            }
+            seen[s] = true;
+            let (mut stack, mut hit) = (vec![s], false);
+            while let Some(q) = stack.pop() {
+                hit |= counts(q);
+                let next: Vec<usize> = (0..27).filter(|r| member(*r) && !seen[*r] && touch(q, *r)).collect();
+                for r in next {
+                    seen[r] = true;
+                    stack.push(r);
+                }
+            }
+            n += usize::from(hit);
+        }
+        n
+    };
+    pieces(&|q| q != 13 && nb[q], &|q, r| gap(q, r).iter().all(|v| *v <= 1), &|_| true) == 1
+        && pieces(&|q| q != 13 && !nb[q] && far(q) <= 2, &|q, r| gap(q, r).iter().sum::<i64>() == 1, &|q| far(q) == 1) == 1
+}
+
+/// Thins the arms (solid, not kept) to lines, one layer from each of the six sides in turn, taking only voxels
+/// whose removal changes no topology. No line ends are kept, so what stays is what holds the kept plate and pad
+/// together (the load paths and the loops between them); loose ends shrink away.
+fn skeleton(grid: &Grid, solid: &[bool], keep: &[bool]) -> Vec<bool> {
+    let mut s = solid.to_vec();
+    loop {
+        let mut changed = false;
+        for dir in [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] {
+            let border: Vec<usize> = (0..grid.cells()).filter(|c| s[*c] && !keep[*c] && !step(grid, *c, dir).is_some_and(|n| s[n])).collect();
+            for c in border {
+                let nb: [bool; 27] = std::array::from_fn(|q| {
+                    let q = q as i64;
+                    q == 13 || step(grid, c, [q / 9 - 1, (q / 3) % 3 - 1, q % 3 - 1]).is_some_and(|n| s[n])
+                });
+                if simple(&nb) {
+                    s[c] = false;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return s;
+        }
+    }
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+/// Distance from p to the segment a-b.
+fn seg_dist(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (ab, ap) = (sub(b, a), sub(p, a));
+    let t = if dot(ab, ab) > 0.0 { (dot(ap, ab) / dot(ab, ab)).clamp(0.0, 1.0) } else { 0.0 };
+    let q = sub(ap, ab.map(|v| v * t));
+    dot(q, q).sqrt()
+}
+
+/// Douglas-Peucker: the fewest points that stay within `tol` of the line.
+fn simplify(p: &[[f64; 3]], tol: f64) -> Vec<[f64; 3]> {
+    let (Some(a), Some(b)) = (p.first(), p.last()) else { return Vec::new() };
+    let worst = (1..p.len().saturating_sub(1)).map(|i| (i, seg_dist(p[i], *a, *b))).max_by(|x, y| x.1.total_cmp(&y.1));
+    match worst {
+        Some((k, d)) if d > tol => {
+            let mut left = simplify(&p[..=k], tol);
+            left.pop();
+            left.extend(simplify(&p[k..], tol));
+            left
+        }
+        _ if p.len() == 1 => vec![*a],
+        _ => vec![*a, *b],
+    }
+}
+
+/// One round bar: straight pieces through `pts`, radius `r`, carrying the volume `vol` (mm3) of its pillar.
+#[derive(Clone, Debug)]
+struct Bar {
+    pts: Vec<[f64; 3]>,
+    vol: f64,
+    r: f64,
+}
+
+impl Bar {
+    fn length(&self) -> f64 {
+        self.pts.windows(2).map(|w| dot(sub(w[1], w[0]), sub(w[1], w[0])).sqrt()).sum()
+    }
+    fn dist(&self, p: [f64; 3]) -> f64 {
+        self.pts.windows(2).map(|w| seg_dist(p, w[0], w[1])).fold(f64::INFINITY, f64::min)
+    }
+}
+
+/// Cuts the arms of the voxel design into pillars: the thinned lines between junctions (and the kept plate and
+/// pad); every arm voxel belongs to the line it reaches first through the material, a junction's voxels are
+/// shared by its pillars. Each pillar becomes a bar of the same volume along its line, ends that touch the
+/// plate or pad run on into it. Returns the bars and the arm volume that belongs to no pillar.
+fn bars(grid: &Grid, solid: &[bool], keep: &[bool]) -> (Vec<Bar>, f64) {
+    let skel = skeleton(grid, solid, keep);
+    let line: Vec<bool> = (0..grid.cells()).map(|c| skel[c] && !keep[c]).collect();
+    let around = |c: usize, f: &dyn Fn(usize) -> bool| n26().filter_map(|d| step(grid, c, d)).filter(|n| f(*n)).collect::<Vec<usize>>();
+    let node: Vec<bool> = (0..grid.cells()).map(|c| line[c] && (around(c, &|n| line[n]).len() != 2 || !around(c, &|n| keep[n]).is_empty())).collect();
+    // junction voxels that touch are one junction: its centre, and where it runs into the plate or pad
+    let mut node_of = vec![usize::MAX; grid.cells()];
+    let mut nodes: Vec<([f64; 3], Option<[f64; 3]>)> = Vec::new();
+    for c in 0..grid.cells() {
+        if !node[c] || node_of[c] != usize::MAX {
+            continue;
+        }
+        let id = nodes.len();
+        node_of[c] = id;
+        let (mut stack, mut members) = (vec![c], Vec::new());
+        while let Some(q) = stack.pop() {
+            members.push(q);
+            for n in around(q, &|n| node[n] && node_of[n] == usize::MAX) {
+                node_of[n] = id;
+                stack.push(n);
+            }
+        }
+        let mean = |cells: &[usize]| {
+            let mut m = [0.0; 3];
+            for q in cells {
+                let p = grid.cell_centre(*q);
+                for a in 0..3 {
+                    m[a] += p[a] / cells.len() as f64;
+                }
+            }
+            m
+        };
+        let mut touch: Vec<usize> = members.iter().flat_map(|q| around(*q, &|n| keep[n])).collect();
+        touch.sort_unstable();
+        touch.dedup();
+        nodes.push((mean(&members), (!touch.is_empty()).then(|| mean(&touch))));
+    }
+    // the lines between junctions
+    let mut edge_of = vec![usize::MAX; grid.cells()];
+    let mut edges: Vec<(usize, usize, Vec<usize>)> = Vec::new();
+    for c in (0..grid.cells()).filter(|c| node[*c]) {
+        for first in around(c, &|n| line[n] && !node[n]) {
+            if edge_of[first] != usize::MAX {
+                continue;
+            }
+            let (mut prev, mut cur, mut chain, mut end) = (c, first, Vec::new(), None);
+            loop {
+                if node[cur] {
+                    end = Some(node_of[cur]);
+                    break;
+                }
+                if edge_of[cur] != usize::MAX {
+                    break; // ran into its own start: a loop with no junction
+                }
+                edge_of[cur] = edges.len();
+                chain.push(cur);
+                let Some(next) = around(cur, &|n| line[n] && n != prev).first().copied() else { break };
+                (prev, cur) = (cur, next);
+            }
+            let a = node_of[c];
+            edges.push((a, end.unwrap_or(a), chain));
+        }
+    }
+    // every arm voxel to the nearest line voxel through the material
+    let e = edges.len();
+    let mut owner = vec![usize::MAX; grid.cells()];
+    let mut queue = std::collections::VecDeque::new();
+    for c in (0..grid.cells()).filter(|c| line[*c]) {
+        owner[c] = if node[c] { e + node_of[c] } else { edge_of[c] };
+        queue.push_back(c);
+    }
+    while let Some(c) = queue.pop_front() {
+        for n in around(c, &|n| solid[n] && !keep[n] && owner[n] == usize::MAX) {
+            owner[n] = owner[c];
+            queue.push_back(n);
+        }
+    }
+    let mut count = vec![0.0f64; e + nodes.len()];
+    let mut lost = 0.0;
+    for c in (0..grid.cells()).filter(|c| solid[*c] && !keep[*c]) {
+        match count.get_mut(owner[c]) {
+            Some(v) => *v += 1.0,
+            None => lost += 1.0,
+        }
+    }
+    let mut degree = vec![0.0f64; nodes.len()];
+    for (a, b, _) in &edges {
+        degree[*a] += 1.0;
+        degree[*b] += 1.0;
+    }
+    for k in 0..nodes.len() {
+        if degree[k] == 0.0 {
+            lost += count[e + k];
+        }
+    }
+    let cell = grid.h.powi(3);
+    let out = edges.iter().enumerate().map(|(i, (a, b, chain))| {
+        let mut pts = Vec::new();
+        pts.extend(nodes[*a].1);
+        pts.push(nodes[*a].0);
+        pts.extend(chain.iter().map(|c| grid.cell_centre(*c)));
+        pts.push(nodes[*b].0);
+        pts.extend(nodes[*b].1);
+        let mut bar = Bar { pts: simplify(&pts, grid.h), vol: cell * (count[i] + count[e + a] / degree[*a] + count[e + b] / degree[*b]), r: 0.0 };
+        bar.r = (bar.vol / (std::f64::consts::PI * bar.length().max(grid.h))).sqrt();
+        bar
+    }).collect();
+    (out, lost * cell)
+}
+
+/// Smooth minimum: the union of two shapes with a round fillet of about `k` mm where they meet.
+fn smin(a: f64, b: f64, k: f64) -> f64 {
+    let t = if k > 0.0 { (k - (a - b).abs()).max(0.0) / k } else { 0.0 };
+    a.min(b) - t * t * k / 4.0
+}
+
+/// The bar design as a closed mesh: the bars, the kept plate and pad as boxes around their voxels, joined with
+/// fillets of `blend` mm, wall and tip faces flat, screw holes cut; marching tetrahedra on a `res` mm grid.
+#[allow(clippy::too_many_arguments)]
+fn bar_mesh(grid: &Grid, keep: &[bool], bars: &[Bar], blend: f64, res: f64, holes: &[[f64; 2]], r: [f64; 2], xb: f64) -> Vec<[[f64; 3]; 3]> {
+    let reach = grid.n[0] as f64 * grid.h;
+    let boxes: Vec<([f64; 3], [f64; 3])> = [false, true].iter().filter_map(|tip| {
+        let cells: Vec<usize> = (0..grid.cells()).filter(|c| keep[*c] && (grid.cell_centre(*c)[0] > 0.5 * reach) == *tip).collect();
+        let lo = [0, 1, 2].map(|a| cells.iter().map(|c| grid.cell_centre(*c)[a] - 0.5 * grid.h).fold(f64::INFINITY, f64::min));
+        let hi = [0, 1, 2].map(|a| cells.iter().map(|c| grid.cell_centre(*c)[a] + 0.5 * grid.h).fold(f64::NEG_INFINITY, f64::max));
+        (!cells.is_empty()).then_some((lo, hi))
+    }).collect();
+    let sdf = |p: [f64; 3]| {
+        let mut d = f64::INFINITY;
+        for (lo, hi) in &boxes {
+            let q: [f64; 3] = [0, 1, 2].map(|a| (p[a] - 0.5 * (lo[a] + hi[a])).abs() - 0.5 * (hi[a] - lo[a]));
+            let out = q.map(|v| v.max(0.0));
+            d = smin(d, dot(out, out).sqrt() + q[0].max(q[1]).max(q[2]).min(0.0), blend);
+        }
+        for b in bars {
+            d = smin(d, b.dist(p) - b.r, blend);
+        }
+        d.max(-p[0]).max(p[0] - reach).max(-hole_dist(p, holes, r, xb, res))
+    };
+    let pad = bars.iter().map(|b| b.r).fold(0.0, f64::max) + blend + 2.0 * res;
+    let lo = [-res, grid.origin[1] - pad, grid.origin[2] - pad];
+    let hi = [reach + res, grid.origin[1] + grid.n[1] as f64 * grid.h + pad, grid.origin[2] + grid.n[2] as f64 * grid.h + pad];
+    let fd = [0, 1, 2].map(|a| ((hi[a] - lo[a]) / res).ceil() as usize + 1);
+    let pos = |a: usize, b: usize, c: usize| [lo[0] + a as f64 * res, lo[1] + b as f64 * res, lo[2] + c as f64 * res];
+    let mut field = vec![0.0; fd[0] * fd[1] * fd[2]];
+    for a in 0..fd[0] {
+        for b in 0..fd[1] {
+            for c in 0..fd[2] {
+                field[(a * fd[1] + b) * fd[2] + c] = -sdf(pos(a, b, c));
+            }
+        }
+    }
+    let mut tris = march(&field, fd, &pos, 0.0);
+    finish(&mut tris, holes, r, xb);
+    tris
+}
+
+// ---- Stress colours: the mesh coloured by the stress in the material under it ----
+
+/// One point per corner position (the mesher gives a shared edge the same point both times).
+fn index(tris: &[[[f64; 3]; 3]]) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let mut at: HashMap<[u64; 3], u32> = HashMap::new();
+    let mut pos = Vec::new();
+    let tri = tris.iter().map(|t| t.map(|p| *at.entry(p.map(f64::to_bits)).or_insert_with(|| { pos.push(p); pos.len() as u32 - 1 }))).collect();
+    (pos, tri)
+}
+
+/// The stress at a surface point: the mean of the material cells around it (the nearest one further in if
+/// none touches it); 0 if there is no material near.
+fn stress_at(g: &Grid, vm: &[f64], p: [f64; 3]) -> f64 {
+    let f = [0, 1, 2].map(|a| (p[a] - g.origin[a]) / g.h);
+    let pick = |base: [i64; 3], span: i64| {
+        let mut v = Vec::new();
+        for q in 0..span.pow(3) {
+            let ijk = [base[0] + q / (span * span), base[1] + (q / span) % span, base[2] + q % span];
+            if (0..3).all(|a| ijk[a] >= 0 && (ijk[a] as usize) < g.n[a]) {
+                let s = vm[g.cell_index(ijk[0] as usize, ijk[1] as usize, ijk[2] as usize)];
+                if s.is_finite() {
+                    v.push(s);
+                }
+            }
+        }
+        (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+    };
+    pick(f.map(|v| (v - 0.5).floor() as i64), 2).or_else(|| pick(f.map(|v| v.floor() as i64 - 1), 3)).unwrap_or(0.0)
+}
+
+/// Binary PLY with a colour per point (Blender: Import PLY, then show the "Col" colour attribute).
+fn ply(pos: &[[f64; 3]], tri: &[[u32; 3]], rgb: &[[u8; 3]]) -> Vec<u8> {
+    let mut out = format!("ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nelement face {}\nproperty list uchar int vertex_indices\nend_header\n", pos.len(), tri.len()).into_bytes();
+    for (p, c) in pos.iter().zip(rgb) {
+        for v in p {
+            out.extend((*v as f32).to_le_bytes());
+        }
+        out.extend(c);
+    }
+    for t in tri {
+        out.push(3);
+        for v in t {
+            out.extend(v.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// A picture of the coloured mesh looking along `look` (orthographic, lit from the eye, z-buffered), with the
+/// colour scale (blue = no stress, red = the peak away from load and supports) along the bottom.
+fn render(pos: &[[f64; 3]], tri: &[[u32; 3]], rgb: &[[u8; 3]], look: [f64; 3], w: usize, h: usize) -> Vec<u8> {
+    let unit = |v: [f64; 3]| { let l = dot(v, v).sqrt(); v.map(|x| x / l) };
+    let f = unit(look);
+    let right = unit(cross(f, if f[2].abs() > 0.99 { [0.0, 1.0, 0.0] } else { [0.0, 0.0, 1.0] }));
+    let up = cross(right, f);
+    let s: Vec<[f64; 3]> = pos.iter().map(|p| [dot(*p, right), dot(*p, up), dot(*p, f)]).collect();
+    let (bar, m) = (16usize, 20.0);
+    let lo = [0, 1].map(|a| s.iter().map(|v| v[a]).fold(f64::INFINITY, f64::min));
+    let hi = [0, 1].map(|a| s.iter().map(|v| v[a]).fold(f64::NEG_INFINITY, f64::max));
+    let scale = ((w as f64 - 2.0 * m) / (hi[0] - lo[0])).min((h as f64 - 3.0 * m - bar as f64) / (hi[1] - lo[1]));
+    let px = |v: [f64; 3]| [m + (v[0] - lo[0]) * scale, h as f64 - 2.0 * m - bar as f64 - (v[1] - lo[1]) * scale, v[2]];
+    let mut img = vec![16u8; w * h * 3];
+    let mut depth = vec![f64::INFINITY; w * h];
+    for t in tri {
+        let ix = t.map(|i| i as usize);
+        let [a, b, c] = ix.map(|i| px(s[i]));
+        let shade = 0.3 + 0.7 * dot(unit(cross(sub(pos[ix[1]], pos[ix[0]]), sub(pos[ix[2]], pos[ix[0]]))), f).abs();
+        let area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        if !shade.is_finite() || area.abs() < 1e-12 {
+            continue;
+        }
+        let x0 = a[0].min(b[0]).min(c[0]).floor().max(0.0) as usize;
+        let x1 = (a[0].max(b[0]).max(c[0]).ceil() as usize).min(w - 1);
+        let y0 = a[1].min(b[1]).min(c[1]).floor().max(0.0) as usize;
+        let y1 = (a[1].max(b[1]).max(c[1]).ceil() as usize).min(h - 1);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let (qx, qy) = (x as f64 + 0.5, y as f64 + 0.5);
+                let wb = ((qx - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (qy - a[1])) / area;
+                let wc = ((b[0] - a[0]) * (qy - a[1]) - (qx - a[0]) * (b[1] - a[1])) / area;
+                let wa = 1.0 - wb - wc;
+                if wa < 0.0 || wb < 0.0 || wc < 0.0 {
+                    continue;
+                }
+                let z = wa * a[2] + wb * b[2] + wc * c[2];
+                if z >= depth[y * w + x] {
+                    continue;
+                }
+                depth[y * w + x] = z;
+                for k in 0..3 {
+                    let col = wa * f64::from(rgb[ix[0]][k]) + wb * f64::from(rgb[ix[1]][k]) + wc * f64::from(rgb[ix[2]][k]);
+                    img[3 * (y * w + x) + k] = (col * shade).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+    for y in h - m as usize - bar..h - m as usize {
+        for x in m as usize..w - m as usize {
+            let c = heat((x as f64 - m) / (w as f64 - 2.0 * m));
+            img[3 * (y * w + x)..3 * (y * w + x) + 3].copy_from_slice(&c);
+        }
+    }
+    img
+}
+
+/// Writes CASE-stress.ply and CASE-stress-{iso,side,top}.png for every case; colour = stress / that case's peak
+/// away from the load and supports (so blue to red, red = the peak; the load and support spots may go past it).
+fn stress_pictures(out: &str, pos: &[[f64; 3]], tri: &[[u32; 3]], g: &Grid, an: &Analysis) -> Result<String, String> {
+    let mut legend = String::new();
+    for c in &an.cases {
+        let rgb: Vec<[u8; 3]> = pos.iter().map(|p| heat(stress_at(g, &c.vm, *p) / c.max_vm_away.max(1e-12))).collect();
+        std::fs::write(format!("{out}/{}-stress.ply", c.name), ply(pos, tri, &rgb)).map_err(|e| e.to_string())?;
+        for (view, look) in [("iso", [-1.0, 0.7, -0.6]), ("side", [0.0, 1.0, 0.0]), ("top", [0.0, 0.0, -1.0])] {
+            std::fs::write(format!("{out}/{}-stress-{view}.png", c.name), png(1200, 900, &render(pos, tri, &rgb, look, 1200, 900))).map_err(|e| e.to_string())?;
+        }
+        legend += &format!("{}: blue 0 MPa -> green -> yellow -> red {:.2} MPa (peak away from load and supports)\n", c.name, c.max_vm_away);
+    }
+    Ok(legend)
 }
 
 fn tris_stl(tris: &[[[f64; 3]; 3]]) -> Vec<u8> {
@@ -410,10 +840,16 @@ fn run() -> Result<(), String> {
         Case { name: "down".into(), force: [0.0, 0.0, -force], moment: [0.0; 3] },
         Case { name: "side".into(), force: [0.0, side, 0.0], moment: [0.0; 3] },
     ];
+    let cv = num("check_voxel", 1.25)?;
+    let analyse_mesh = |pos: &[[f64; 3]], tri: &[[u32; 3]]| -> Result<(Grid, Vec<bool>, Analysis), String> {
+        let (g, sol) = voxelize(pos, tri, cv)?;
+        let setup = Setup { grid: &g, solid: &sol, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &Region::Side { axis: 0, max: true, depth: 0.5 * cv }, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true };
+        let an = analyse(&setup, &cases, |_| {})?;
+        Ok((g, sol, an))
+    };
     if let Some(file) = o.get("check") {
-        let cv = num("check_voxel", 1.25)?;
         let (pos, tri) = read_stl(&std::fs::read(file).map_err(|e| format!("{file}: {e}"))?)?;
-        let (g, sol) = voxelize(&pos, &tri, cv)?;
+        let (g, sol, fin) = analyse_mesh(&pos, &tri)?;
         let cells = sol.iter().filter(|v| **v).count();
         eprintln!("{file}: {}x{}x{} voxels of {cv} mm, {cells} cells = {:.1} cm3", g.n[0], g.n[1], g.n[2], cells as f64 * cv.powi(3) / 1000.0);
         {
@@ -444,8 +880,6 @@ fn run() -> Result<(), String> {
             }
             eprintln!("joined to the wall: {reached} of {cells} cells, {tip} cells of the tip face");
         }
-        let setup = Setup { grid: &g, solid: &sol, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &Region::Side { axis: 0, max: true, depth: 0.5 * cv }, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true };
-        let fin = analyse(&setup, &cases, |_| {})?;
         std::fs::create_dir_all(&out).map_err(|e| format!("{out}: {e}"))?;
         for c in &fin.cases {
             for (ax, name) in [(0, "x"), (1, "y"), (2, "z")] {
@@ -457,6 +891,7 @@ fn run() -> Result<(), String> {
         for w in &fin.warnings {
             println!("warning: {w}");
         }
+        print!("{}", stress_pictures(&out, &pos, &tri, &g, &fin)?);
         return Ok(());
     }
     let t0 = Instant::now();
@@ -555,6 +990,63 @@ fn run() -> Result<(), String> {
     let (tris, thr, vol) = smooth(&grid, &solid, &keep, num("blur", 2.0)? as usize, &holes, [hr, sr], xb);
     std::fs::write(format!("{out}/bracket-smooth.stl"), tris_stl(&tris)).map_err(|e| e.to_string())?;
     println!("smooth: {} triangles, level {thr:.3}, {:.1} cm3 against {:.1} cm3 as voxels", tris.len(), vol / 1000.0, count as f64 * cell_cm3);
+    if o.get("bars").is_some_and(|v| v != "0") {
+        let reach = n[0] as f64 * h;
+        let (mut list, lost) = bars(&grid, &solid, &keep);
+        let arms = (0..grid.cells()).filter(|c| solid[*c] && !keep[*c]).count() as f64 * h.powi(3);
+        eprintln!("{} pillars from {:.1} cm3 of arms ({:.2} cm3 belongs to none)", list.len(), arms / 1000.0, lost / 1000.0);
+        let r0: Vec<f64> = list.iter().map(|b| b.r).collect();
+        let (blend, res, rounds) = (num("blend", 3.0)?, num("bar_res", 0.75)?, num("rounds", 4.0)? as usize);
+        if !(0.2..=h).contains(&res) || !(0.0..=20.0).contains(&blend) {
+            return Err(format!("bar_res 0.2-{h} (the voxel), blend 0-20 mm"));
+        }
+        // the kept pad starts here; plate and pad are not bars, their peaks are where the load and supports go in
+        let pad_from = (0..grid.cells()).filter(|c| keep[*c] && grid.cell_centre(*c)[0] > 0.5 * reach).map(|c| grid.cell_centre(c)[0] - 0.5 * h).fold(reach, f64::min);
+        let mut round = 0;
+        let (tris, pos, tri, g, an, peak) = loop {
+            let tris = bar_mesh(&grid, &keep, &list, blend, res, &holes, [hr, sr], xb);
+            let (pos, tri) = index(&tris);
+            let (g, sol, an) = analyse_mesh(&pos, &tri)?;
+            // each bar's peak: the material cells nearest to it, outside the kept plate and pad
+            let mut peak = vec![0.0f64; list.len()];
+            for c in (0..g.cells()).filter(|c| sol[*c]) {
+                let p = g.cell_centre(c);
+                if p[0] < xb || p[0] > pad_from {
+                    continue;
+                }
+                let near = list.iter().enumerate().map(|(i, b)| (i, b.dist(p) - b.r)).min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((i, d)) = near && d < cv {
+                    peak[i] = an.cases.iter().map(|k| k.vm[c]).filter(|v| v.is_finite()).fold(peak[i], f64::max);
+                }
+            }
+            let sfs: Vec<String> = an.cases.iter().map(|k| format!("{} SF {:.1}, tip {:.2} mm", k.name, strength / k.max_vm_away.max(1e-12), k.max_disp)).collect();
+            let weak: Vec<usize> = (0..list.len()).filter(|i| strength / peak[*i].max(1e-12) < sf).collect();
+            eprintln!("bars round {round}: {:.1} cm3, {}; {} bars below SF {sf}, {:.0} s", volume(&tris) / 1000.0, sfs.join("; "), weak.len(), t0.elapsed().as_secs_f64());
+            if weak.is_empty() || round >= rounds {
+                break (tris, pos, tri, g, an, peak);
+            }
+            for i in weak {
+                list[i].r *= (sf * peak[i] / strength).cbrt().clamp(1.05, 1.5); // bending: stress goes with 1/r^3
+            }
+            round += 1;
+        };
+        std::fs::write(format!("{out}/bars.stl"), tris_stl(&tris)).map_err(|e| e.to_string())?;
+        let v = volume(&tris);
+        let mut rep = format!("Round bars from {}: {} pillars, each a round bar of its own voxel volume between its ends (fillets {blend} mm, grown {round} times where SF < {sf})\n", from.as_deref().unwrap_or("this run"), list.len());
+        for (i, b) in list.iter().enumerate() {
+            let (a, z) = (b.pts.first().copied().unwrap_or_default(), b.pts.last().copied().unwrap_or_default());
+            rep += &format!("  bar {i:>2}: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0}), {} bends, {:.0} mm long, pillar {:.2} cm3 -> diameter {:.1} mm, now {:.1} mm, peak {:.2} MPa (SF {:.1})\n", a[0], a[1], a[2], z[0], z[1], z[2], b.pts.len().saturating_sub(2), b.length(), b.vol / 1000.0, 2.0 * r0[i], 2.0 * b.r, peak[i], strength / peak[i].max(1e-12));
+        }
+        for c in &an.cases {
+            rep += &format!("{}: away peak {:.2} MPa (SF {:.1} on {strength} MPa), tip moves {:.3} mm (check on {cv} mm voxels)\n", c.name, c.max_vm_away, strength / c.max_vm_away.max(1e-12), c.max_disp);
+        }
+        rep += "  (a bar's peak counts only material outside the kept plate and pad; the away peak below also counts inside them)\n";
+        rep += &format!("bars.stl: {} triangles, {:.1} cm3 = {:.1} g (voxel design {:.1} cm3; arms {:.1} cm3, of which {:.2} in no pillar)\n", tris.len(), v / 1000.0, v / 1000.0 * m.strengths().density_kg_m3.unwrap_or(1270.0) / 1000.0, count as f64 * cell_cm3, arms / 1000.0, lost / 1000.0);
+        rep += &stress_pictures(&out, &pos, &tri, &g, &an)?;
+        std::fs::write(format!("{out}/bars-report.txt"), &rep).map_err(|e| e.to_string())?;
+        print!("{rep}");
+        return Ok(());
+    }
     if from.is_some() {
         return Ok(());
     }
@@ -617,6 +1109,41 @@ mod tests {
         let (tris, _, vol) = smooth(&g, &vec![true; 216], &vec![true; 216], 2, &[], [HOLE_R, SINK_R], 0.0);
         assert!((vol - 216.0).abs() < 0.03 * 216.0, "kept volume {vol}"); // the edges lose a little
         assert!(tris.iter().flatten().all(|p| p[1].abs() <= 3.001 && p[2].abs() <= 3.001));
+    }
+
+    #[test]
+    fn simple_points() {
+        let mut nb = [false; 27];
+        nb[13] = true;
+        assert!(!simple(&nb), "a lone voxel is a piece of its own");
+        nb[4] = true;
+        assert!(simple(&nb), "the end of a line");
+        nb[22] = true;
+        assert!(!simple(&nb), "the middle of a line holds it together");
+        assert!(!simple(&[true; 27]), "inside a block: a hole would open");
+    }
+
+    #[test]
+    fn one_pillar_becomes_one_bar_of_its_volume() {
+        // plate x 0-2, pad x 18-20, a 4 x 4 arm between them, on a 1 mm grid
+        let g = Grid { origin: [0.0, -5.0, -5.0], h: 1.0, n: [20, 10, 10] };
+        let at = |c: usize| { let p = g.cell_centre(c); (p[0], p[1].abs(), p[2].abs()) };
+        let keep: Vec<bool> = (0..g.cells()).map(|c| { let (x, y, z) = at(c); (x < 2.0 || x > 18.0) && y < 3.0 && z < 3.0 }).collect();
+        let solid: Vec<bool> = (0..g.cells()).map(|c| { let (_, y, z) = at(c); keep[c] || (y < 2.0 && z < 2.0) }).collect();
+        let (list, lost) = bars(&g, &solid, &keep);
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert!(lost.abs() < 1e-9);
+        let b = &list[0];
+        assert!((b.vol - 16.0 * 16.0).abs() < 1e-9, "the arm is 16 x 4 x 4: {}", b.vol);
+        let ends = [b.pts[0][0], b.pts[b.pts.len() - 1][0]];
+        assert!(ends.iter().any(|x| *x < 2.0) && ends.iter().any(|x| *x > 18.0), "runs into plate and pad: {:?}", b.pts);
+        assert!(b.pts.iter().all(|p| p[1].abs() < 1.01 && p[2].abs() < 1.01), "on the arm's axis: {:?}", b.pts);
+        // the mesh holds the plate, the pad and the bar
+        let tris = bar_mesh(&g, &keep, &list, 0.0, 0.25, &[], [HOLE_R, SINK_R], 0.0);
+        let want = 2.0 * 2.0 * 6.0 * 6.0 + std::f64::consts::PI * b.r * b.r * 16.0;
+        assert!((volume(&tris) - want).abs() < 0.05 * want, "{} against {want}", volume(&tris));
+        let (pos, tri) = index(&tris);
+        assert!(pos.len() < tris.len() && tri.len() == tris.len());
     }
 
     #[test]
