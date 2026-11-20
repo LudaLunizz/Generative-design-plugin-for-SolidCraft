@@ -14,6 +14,7 @@
 //!   bars=1 [blend=3 bar_res=0.75 rounds=4] every pillar of the design (also with from=DIR) becomes a round bar of the same
 //!                                          volume between its two ends; checked on check_voxel, bars below sf grow
 //!                                          (at most `rounds` times); fillets of `blend` mm, mesh grid bar_res mm
+//!   taper=1                                size every point along a bar on its own (thick roots, thin middles), smoothed
 //!   size=1                                 bars also get thinner where SF > 1.3 x sf (not below min_member); keeps the lightest round that passes
 //!   plate=frame [strip=12] hold=screws     wall plate as pads round screws and bar roots joined by strips; held only at the
 //!                                          screws (default with a frame; hold=wall glues the whole wall face as before)
@@ -454,16 +455,120 @@ fn round_bends(p: &[[f64; 3]], passes: usize) -> Vec<[f64; 3]> {
 struct Bar {
     pts: Vec<[f64; 3]>,
     vol: f64,
-    r: f64,
+    /// radius at every point of `pts` (all the same until the bar is tapered)
+    r: Vec<f64>,
+}
+
+/// Signed distance to a cone with round ends: sphere r1 at a, sphere r2 at b, their common tangent cone
+/// between (Inigo Quilez' round cone). One sphere inside the other: the bigger sphere.
+fn round_cone(p: [f64; 3], a: [f64; 3], b: [f64; 3], r1: f64, r2: f64) -> f64 {
+    let ba = sub(b, a);
+    let l2 = dot(ba, ba);
+    let rr = r1 - r2;
+    let a2 = l2 - rr * rr;
+    let pa = sub(p, a);
+    if a2 <= 1e-12 {
+        let pb = sub(p, b);
+        return (dot(pa, pa).sqrt() - r1).min(dot(pb, pb).sqrt() - r2);
+    }
+    let y = dot(pa, ba);
+    let z = y - l2;
+    let q = sub(pa.map(|v| v * l2), ba.map(|v| v * y));
+    let x2 = dot(q, q);
+    let (y2, z2) = (y * y * l2, z * z * l2);
+    let k = rr.signum() * rr * rr * x2;
+    if z.signum() * a2 * z2 > k {
+        return (x2 + z2).sqrt() / l2 - r2;
+    }
+    if y.signum() * a2 * y2 < k {
+        return (x2 + y2).sqrt() / l2 - r1;
+    }
+    ((x2 * a2 / l2).sqrt() + y * rr) / l2 - r1
 }
 
 impl Bar {
     fn length(&self) -> f64 {
         self.pts.windows(2).map(|w| dot(sub(w[1], w[0]), sub(w[1], w[0])).sqrt()).sum()
     }
-    fn dist(&self, p: [f64; 3]) -> f64 {
-        self.pts.windows(2).map(|w| seg_dist(p, w[0], w[1])).fold(f64::INFINITY, f64::min)
+    /// Signed distance to the bar's surface, and the point of `pts` nearest to where it is measured.
+    fn near(&self, p: [f64; 3]) -> (f64, usize) {
+        let mut best = (f64::INFINITY, 0);
+        for i in 0..self.pts.len().saturating_sub(1) {
+            let d = round_cone(p, self.pts[i], self.pts[i + 1], self.r[i], self.r[i + 1]);
+            if d < best.0 {
+                let ab = sub(self.pts[i + 1], self.pts[i]);
+                let t = dot(sub(p, self.pts[i]), ab) / dot(ab, ab).max(1e-12);
+                best = (d, if t < 0.5 { i } else { i + 1 });
+            }
+        }
+        if self.pts.len() == 1 {
+            let q = sub(p, self.pts[0]);
+            best = (dot(q, q).sqrt() - self.r[0], 0);
+        }
+        best
     }
+    fn rmax(&self) -> f64 {
+        self.r.iter().copied().fold(0.0, f64::max)
+    }
+    /// Volume of the cone pieces (overlaps at the bends counted twice, a little).
+    fn volume(&self) -> f64 {
+        (0..self.pts.len().saturating_sub(1)).map(|i| {
+            let l = dot(sub(self.pts[i + 1], self.pts[i]), sub(self.pts[i + 1], self.pts[i])).sqrt();
+            std::f64::consts::PI * l * (self.r[i] * self.r[i] + self.r[i] * self.r[i + 1] + self.r[i + 1] * self.r[i + 1]) / 3.0
+        }).sum()
+    }
+}
+
+/// New radii from the stress at every point: thicker where SF < sf, thinner (two_way) where SF > 1.3 sf, never
+/// below r_min; `taper`: every point on its own, then smoothed so the bar has no bulges and no cone steeper than
+/// half its length; else the whole bar by its worst point. Points with no stress measured take their neighbour's.
+fn resize(bar: &Bar, peak: &[f64], sf: f64, strength: f64, two_way: bool, taper: bool, r_min: f64) -> Vec<f64> {
+    let factor = |pk: f64| {
+        let s_now = strength / pk.max(1e-12);
+        // bending: stress goes with 1/r^3; a thinner bar aims a little above the target SF
+        if s_now < sf {
+            (sf * pk / strength).cbrt().clamp(1.05, 1.5)
+        } else if two_way && s_now > 1.3 * sf {
+            (1.1 * sf * pk / strength).cbrt().clamp(0.7, 0.95)
+        } else {
+            1.0
+        }
+    };
+    let n = bar.r.len();
+    let mut pk = peak.to_vec();
+    if pk.iter().all(|v| *v <= 0.0) {
+        return bar.r.clone();
+    }
+    for (i, v) in pk.iter_mut().enumerate() {
+        if *v <= 0.0 {
+            let from = (0..n).filter(|j| peak[*j] > 0.0).min_by_key(|j| j.abs_diff(i)).unwrap_or(i);
+            *v = peak[from];
+        }
+    }
+    if !taper {
+        let f = factor(pk.iter().copied().fold(0.0, f64::max));
+        return bar.r.iter().map(|r| (r * f).max(r_min)).collect();
+    }
+    let own: Vec<f64> = bar.r.iter().zip(&pk).map(|(r, p)| (r * factor(*p)).max(r_min)).collect();
+    let mut r = own.clone();
+    // smoothing only fills dips: no point ends up thinner than its own sizing asks
+    for _ in 0..3 {
+        let o = r.clone();
+        for i in 0..n {
+            let (a, b) = (o[i.saturating_sub(1)], o[(i + 1).min(n - 1)]);
+            r[i] = (0.25 * a + 0.5 * o[i] + 0.25 * b).max(own[i]);
+        }
+    }
+    // no cone steeper than half its length, both ways
+    for i in 1..n {
+        let l = dot(sub(bar.pts[i], bar.pts[i - 1]), sub(bar.pts[i], bar.pts[i - 1])).sqrt();
+        r[i] = r[i].max(r[i - 1] - 0.5 * l);
+    }
+    for i in (0..n.saturating_sub(1)).rev() {
+        let l = dot(sub(bar.pts[i + 1], bar.pts[i]), sub(bar.pts[i + 1], bar.pts[i])).sqrt();
+        r[i] = r[i].max(r[i + 1] - 0.5 * l);
+    }
+    r
 }
 
 /// Cuts the arms of the voxel design into pillars: the thinned lines between junctions (and the kept plate and
@@ -573,8 +678,8 @@ fn bars(grid: &Grid, solid: &[bool], keep: &[bool]) -> (Vec<Bar>, f64) {
         pts.extend(chain.iter().map(|c| grid.cell_centre(*c)));
         pts.push(nodes[*b].0);
         pts.extend(nodes[*b].1);
-        let mut bar = Bar { pts: round_bends(&simplify(&pts, grid.h), 3), vol: cell * (count[i] + count[e + a] / degree[*a] + count[e + b] / degree[*b]), r: 0.0 };
-        bar.r = (bar.vol / (std::f64::consts::PI * bar.length().max(grid.h))).sqrt();
+        let mut bar = Bar { pts: round_bends(&simplify(&pts, grid.h), 3), vol: cell * (count[i] + count[e + a] / degree[*a] + count[e + b] / degree[*b]), r: Vec::new() };
+        bar.r = vec![(bar.vol / (std::f64::consts::PI * bar.length().max(grid.h))).sqrt(); bar.pts.len()];
         bar
     }).collect();
     (out, lost * cell)
@@ -595,9 +700,9 @@ fn plate_frame(bars: &[Bar], holes: &[[f64; 2]], r: [f64; 2], xb: f64, strip: f6
         caps.push((*sc, *sc, r[1] + 4.0)); // round the countersink, room for the head
     }
     for b in bars {
-        for end in [b.pts.first(), b.pts.last()].into_iter().flatten().filter(|e| e[0] < xb) {
+        for (end, re) in [(b.pts.first(), b.r.first()), (b.pts.last(), b.r.last())].into_iter().filter_map(|(e, r)| Some((e?, *r?))).filter(|(e, _)| e[0] < xb) {
             let root = [end[1], end[2]];
-            caps.push((root, root, b.r + 3.0));
+            caps.push((root, root, re + 3.0));
             let near = screws.iter().min_by(|a, c| (a[0] - root[0]).hypot(a[1] - root[1]).total_cmp(&(c[0] - root[0]).hypot(c[1] - root[1])));
             if let Some(sc) = near {
                 caps.push((root, *sc, 0.5 * strip));
@@ -645,15 +750,17 @@ fn bar_mesh(grid: &Grid, keep: &[bool], bars: &[Bar], blend: f64, res: f64, hole
         for (b, (blo, bhi)) in bars.iter().zip(&reach_box) {
             // a bar whose box is further than the fillet reaches cannot change d
             let out: [f64; 3] = [0, 1, 2].map(|a| (blo[a] - p[a]).max(p[a] - bhi[a]).max(0.0));
-            if dot(out, out).sqrt() - b.r > d + blend {
+            if dot(out, out).sqrt() - b.rmax() > d + blend {
                 continue;
             }
-            d = smin(d, b.dist(p) - b.r, blend);
+            d = smin(d, b.near(p).0, blend);
         }
         // hole edges get a small round (smooth cut): a sharp rim comes out of the mesher as a saw edge
         -smin(-d.max(-p[0]).max(p[0] - reach), hole_dist(p, holes, r, xb, res), 1.0)
     };
-    let pad = bars.iter().map(|b| b.r).fold(0.0, f64::max) + blend + 2.0 * res;
+    // room round the design for the thickest bar and the frame's widest part (pads and strips reach past the voxels)
+    let reach_out = frame.iter().map(|c| c.2).fold(bars.iter().map(Bar::rmax).fold(0.0, f64::max), f64::max);
+    let pad = reach_out + blend + 2.0 * res;
     // half a step off in x, so no node lies on the wall or tip face (the crossing then lands exactly on it)
     let lo = [-1.5 * res, grid.origin[1] - pad, grid.origin[2] - pad];
     let hi = [reach + 1.5 * res, grid.origin[1] + grid.n[1] as f64 * grid.h + pad, grid.origin[2] + grid.n[2] as f64 * grid.h + pad];
@@ -1067,7 +1174,8 @@ fn run() -> Result<(), String> {
         let (mut list, lost) = bars(&grid, &solid, &keep);
         let arms = (0..grid.cells()).filter(|c| solid[*c] && !keep[*c]).count() as f64 * h.powi(3);
         eprintln!("{} pillars from {:.1} cm3 of arms ({:.2} cm3 belongs to none)", list.len(), arms / 1000.0, lost / 1000.0);
-        let r0: Vec<f64> = list.iter().map(|b| b.r).collect();
+        let r0: Vec<f64> = list.iter().map(|b| b.r.first().copied().unwrap_or(0.0)).collect();
+        let taper = o.get("taper").is_some_and(|v| v != "0");
         let (blend, res, rounds) = (num("blend", 3.0)?, num("bar_res", 0.75)?, num("rounds", 4.0)? as usize);
         if !(0.2..=h).contains(&res) || !(0.0..=20.0).contains(&blend) {
             return Err(format!("bar_res 0.2-{h} (the voxel), blend 0-20 mm"));
@@ -1101,7 +1209,7 @@ fn run() -> Result<(), String> {
             let (g, sol, an) = analyse_mesh(&pos, &tri, &fixed_bars)?;
             // each bar's peak: the material cells nearest to it, outside the kept plate and pad; the plate's own
             // peak away from where it is held (the wall face, or round the screws)
-            let mut peak = vec![0.0f64; list.len()];
+            let mut station: Vec<Vec<f64>> = list.iter().map(|b| vec![0.0; b.pts.len()]).collect();
             let mut plate_peak = 0.0f64;
             for c in (0..g.cells()).filter(|c| sol[*c]) {
                 let p = g.cell_centre(c);
@@ -1116,15 +1224,24 @@ fn run() -> Result<(), String> {
                 if p[0] > pad_from {
                     continue;
                 }
-                let near = list.iter().enumerate().map(|(i, b)| (i, b.dist(p) - b.r)).min_by(|a, b| a.1.total_cmp(&b.1));
-                if let Some((i, d)) = near && d < cv {
-                    peak[i] = peak[i].max(worst);
+                let near = list.iter().enumerate().map(|(i, b)| (i, b.near(p))).min_by(|a, b| a.1.0.total_cmp(&b.1.0));
+                if let Some((i, (d, k))) = near && d < cv {
+                    station[i][k] = station[i][k].max(worst);
                 }
             }
+            let peak: Vec<f64> = station.iter().map(|v| v.iter().copied().fold(0.0, f64::max)).collect();
             let sf_of = |v: f64| strength / v.max(1e-12);
             let sfs: Vec<String> = an.cases.iter().map(|k| format!("{} SF {:.1}, tip {:.2} mm", k.name, sf_of(k.max_vm_away), k.max_disp)).collect();
             let weak = (0..list.len()).filter(|i| sf_of(peak[*i]) < sf).count();
-            let slack = (0..list.len()).filter(|i| sf_of(peak[*i]) > 1.3 * sf && list[*i].r > r_min + 1e-9).count();
+            // well above: the worst point (whole bar), or any point (tapered) with room to get thinner
+            let slack = (0..list.len()).filter(|i| {
+                let b = &list[*i];
+                if taper {
+                    station[*i].iter().zip(&b.r).any(|(pk, r)| *pk > 0.0 && sf_of(*pk) > 1.3 * sf && *r > r_min + 1e-9)
+                } else {
+                    sf_of(peak[*i]) > 1.3 * sf && b.rmax() > r_min + 1e-9
+                }
+            }).count();
             let vol = volume(&tris);
             eprintln!("bars round {round}: {:.1} cm3, {}; plate SF {:.1} (strips {strip:.1} mm); {weak} bars below SF {sf}, {slack} well above, {:.0} s", vol / 1000.0, sfs.join("; "), sf_of(plate_peak), t0.elapsed().as_secs_f64());
             // the frame's strips are sized too: plate bending stress goes with 1 / width
@@ -1132,17 +1249,7 @@ fn run() -> Result<(), String> {
             let plate_off = strip > 0.0 && (plate_sf < sf || (two_way && plate_sf > 1.3 * sf && strip > 8.0));
             let stop = round >= rounds || (weak == 0 && !plate_off && (!two_way || slack == 0));
             let next_strip = if plate_off { (strip * (1.1 * sf / plate_sf).clamp(0.8, 1.6)).clamp(8.0, 40.0) } else { strip };
-            // bending: stress goes with 1/r^3; a thinner bar aims a little above the target SF
-            let next: Vec<f64> = list.iter().zip(&peak).map(|(b, pk)| {
-                let s_now = sf_of(*pk);
-                if s_now < sf {
-                    b.r * (sf * pk / strength).cbrt().clamp(1.05, 1.5)
-                } else if two_way && s_now > 1.3 * sf {
-                    (b.r * (1.1 * sf * pk / strength).cbrt().clamp(0.7, 0.95)).max(r_min)
-                } else {
-                    b.r
-                }
-            }).collect();
+            let next: Vec<Vec<f64>> = list.iter().zip(&station).map(|(b, st)| resize(b, st, sf, strength, two_way, taper, r_min)).collect();
             let state = (tris, pos, tri, g, an, peak, plate_peak, list.clone(), round, strip);
             if weak == 0 && sf_of(plate_peak) >= sf && best.as_ref().is_none_or(|b| vol < volume(&b.0)) {
                 best = Some(state);
@@ -1156,17 +1263,21 @@ fn run() -> Result<(), String> {
             for (b, r) in list.iter_mut().zip(next) {
                 b.r = r;
             }
+            // a step that changes nothing would repeat the same round
+            if round > 0 && last.as_ref().is_some_and(|l| l.7.iter().zip(&list).all(|(a, b)| a.r == b.r)) && strip == last.as_ref().map_or(strip, |l| l.9) {
+                break;
+            }
             round += 1;
         }
         let passed = best.is_some();
         let (tris, pos, tri, g, an, peak, plate_peak, list, used, strip) = best.or(last).ok_or("no bar round ran")?;
         std::fs::write(format!("{out}/bars.stl"), tris_stl(&tris)).map_err(|e| e.to_string())?;
         let v = volume(&tris);
-        let mut rep = format!("Round bars from {}: {} pillars, each a round bar of its own voxel volume between its ends (fillets {blend} mm); sizing {} to SF {sf}, {round} rounds, kept round {used}{}\n", from.as_deref().unwrap_or("this run"), list.len(), if two_way { "both ways (thinner and thicker)" } else { "only thicker" }, if passed { " (the lightest that passes)" } else { " (NONE PASSED: the last one)" });
+        let mut rep = format!("Round bars from {}: {} pillars, each a round bar of its own voxel volume between its ends (fillets {blend} mm); sizing {} to SF {sf}, {round} rounds, kept round {used}{}\n", from.as_deref().unwrap_or("this run"), list.len(), match (two_way, taper) { (true, true) => "both ways, point by point along each bar (tapered)", (true, false) => "both ways (thinner and thicker)", (false, true) => "only thicker, point by point (tapered)", _ => "only thicker" }, if passed { " (the lightest that passes)" } else { " (NONE PASSED: the last one)" });
         rep += &format!("Wall plate: {}, {xb} mm thick; held {}\n", if strip > 0.0 { format!("frame (pads round screws and bar roots, {strip:.1} mm strips)") } else { "full box".into() }, if hold == "wall" { "on the whole wall face" } else { "only at the screws (the material each screw clamps; no wall contact, so on the safe side)" });
         for (i, b) in list.iter().enumerate() {
             let (a, z) = (b.pts.first().copied().unwrap_or_default(), b.pts.last().copied().unwrap_or_default());
-            rep += &format!("  bar {i:>2}: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0}), {:.0} mm long, pillar {:.2} cm3 -> diameter {:.1} mm, now {:.1} mm, peak {:.2} MPa (SF {:.1})\n", a[0], a[1], a[2], z[0], z[1], z[2], b.length(), b.vol / 1000.0, 2.0 * r0[i], 2.0 * b.r, peak[i], strength / peak[i].max(1e-12));
+            rep += &format!("  bar {i:>2}: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0}), {:.0} mm long, pillar {:.2} cm3 -> diameter {:.1} mm; now {:.1} mm at the start, {:.1} at the end, {:.1} thinnest ({:.2} cm3), peak {:.2} MPa (SF {:.1})\n", a[0], a[1], a[2], z[0], z[1], z[2], b.length(), b.vol / 1000.0, 2.0 * r0[i], 2.0 * b.r.first().copied().unwrap_or(0.0), 2.0 * b.r.last().copied().unwrap_or(0.0), 2.0 * b.r.iter().copied().fold(f64::INFINITY, f64::min), b.volume() / 1000.0, peak[i], strength / peak[i].max(1e-12));
         }
         rep += &format!("  plate: peak {plate_peak:.2} MPa (SF {:.1}) away from where it is held\n", strength / plate_peak.max(1e-12));
         for c in &an.cases {
@@ -1255,7 +1366,7 @@ mod tests {
 
     #[test]
     fn frame_plate_joins_every_bar_root_to_a_screw() {
-        let bar = Bar { pts: vec![[2.0, 30.0, 40.0], [100.0, 0.0, 0.0]], vol: 1.0, r: 3.0 };
+        let bar = Bar { pts: vec![[2.0, 30.0, 40.0], [100.0, 0.0, 0.0]], vol: 1.0, r: vec![3.0; 2] };
         let caps = plate_frame(&[bar], &[[0.0, 41.0], [0.0, -41.0]], [2.75, 5.2], 5.0, 12.0);
         // spine, two screw pads, root pad, strip root -> top screw
         assert_eq!(caps.len(), 5, "{caps:?}");
@@ -1269,6 +1380,47 @@ mod tests {
         assert!(tris.iter().flatten().all(|p| p[0] >= -1e-9 && p[0] <= 3.0 + 1e-9), "plate stays between x 0 and 3");
         let area = 12.0 * 4.0 + 2.0 * std::f64::consts::PI * 36.0; // spine 12 x 4 + two pads of radius 6, less overlap
         assert!(caps.len() == 3 && volume(&tris) < 3.0 * area && volume(&tris) > 0.5 * 3.0 * area, "{}", volume(&tris));
+        // strips wider than the grid's own margin: the mesh must still be closed
+        let wide = bar_mesh(&g, &keep, &[], 0.0, 0.25, &[[0.0, 9.0], [0.0, -9.0]], [1.0, 2.0], 3.0, 16.0);
+        let (_, tri) = index(&wide);
+        let edges: std::collections::HashSet<(u32, u32)> = tri.iter().flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]).collect();
+        assert!(edges.iter().all(|(a, b)| edges.contains(&(*b, *a))), "the wide frame has an open edge");
+    }
+
+    #[test]
+    fn round_cone_distances() {
+        let (a, b) = ([0.0; 3], [10.0, 0.0, 0.0]);
+        // equal radii: a capsule
+        assert!((round_cone([5.0, 3.0, 0.0], a, b, 1.0, 1.0) - 2.0).abs() < 1e-9);
+        assert!((round_cone([-2.0, 0.0, 0.0], a, b, 1.0, 1.0) - 1.0).abs() < 1e-9);
+        // tapered 2 -> 1: past the ends the spheres, beside it the cone (slant 0.1 per unit)
+        assert!((round_cone([-3.0, 0.0, 0.0], a, b, 2.0, 1.0) - 1.0).abs() < 1e-9);
+        assert!((round_cone([12.0, 0.0, 0.0], a, b, 2.0, 1.0) - 1.0).abs() < 1e-9);
+        let s = 0.1f64.atan();
+        let want = 5.0 * s.cos() - (2.0 - 0.1 * 5.0 + 5.0 * 0.1 * 0.0) * 1.0 / s.cos() * s.cos() * s.cos() - 0.0;
+        let got = round_cone([5.0, 5.0, 0.0], a, b, 2.0, 1.0);
+        assert!(got > 3.4 && got < 3.6, "{got} (about {want})");
+        assert!(round_cone([5.0, 0.0, 0.0], a, b, 2.0, 1.0) < -1.4, "inside");
+        // one sphere swallows the other
+        assert!((round_cone([0.0, 0.0, 5.0], a, [0.5, 0.0, 0.0], 3.0, 1.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tapered_sizing_keeps_a_thick_root_and_a_thin_middle() {
+        let pts: Vec<[f64; 3]> = (0..11).map(|i| [10.0 * f64::from(i), 0.0, 0.0]).collect();
+        let bar = Bar { pts, vol: 0.0, r: vec![4.0; 11] };
+        // stress high at the root, low in the middle, unmeasured at the far end
+        let peak = [14.0, 12.0, 6.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 0.0, 0.0];
+        let r = resize(&bar, &peak, 4.0, 47.0, true, true, 2.5);
+        assert!(r[0] > 4.0 && r[5] < 4.0 && r.iter().all(|v| *v >= 2.5), "{r:?}");
+        // SF 4.7 at a point already in the band: it keeps its size, smoothing does not thin it
+        let mid = resize(&bar, &[10.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0], 4.0, 47.0, true, true, 2.5);
+        assert!(mid[0] >= 4.0 - 1e-12, "{mid:?}");
+        assert!(r.windows(2).all(|w| (w[0] - w[1]).abs() <= 5.0 + 1e-9));
+        assert_eq!(r[9], r[10], "the unmeasured end takes its neighbour's size");
+        // not tapered: the whole bar by its worst point
+        let u = resize(&bar, &peak, 4.0, 47.0, true, false, 2.5);
+        assert!(u.iter().all(|v| (v - u[0]).abs() < 1e-12) && u[0] > 4.0);
     }
 
     #[test]
@@ -1300,7 +1452,7 @@ mod tests {
         assert!(b.pts.iter().all(|p| p[1].abs() < 1.01 && p[2].abs() < 1.01), "on the arm's axis: {:?}", b.pts);
         // the mesh holds the plate, the pad and the bar
         let tris = bar_mesh(&g, &keep, &list, 0.0, 0.25, &[], [HOLE_R, SINK_R], 0.0, 0.0);
-        let want = 2.0 * 2.0 * 6.0 * 6.0 + std::f64::consts::PI * b.r * b.r * 16.0;
+        let want = 2.0 * 2.0 * 6.0 * 6.0 + std::f64::consts::PI * b.r[0] * b.r[0] * 16.0;
         assert!((volume(&tris) - want).abs() < 0.05 * want, "{} against {want}", volume(&tris));
         let (pos, tri) = index(&tris);
         assert!(pos.len() < tris.len() && tri.len() == tris.len());
