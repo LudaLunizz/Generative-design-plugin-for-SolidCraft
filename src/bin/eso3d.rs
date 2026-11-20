@@ -6,7 +6,7 @@
 //!   voxel=2.5  force=50 side=15            tip load: force N down (-Z) and side N along Y (two cases)
 //!   back=6 pad=8                           kept solid: wall plate thickness (screws), load pad depth
 //!   min_member=5                           no member thinner than this (opening after every round; 0 = off)
-//!   holes=y:z,y:z                          countersunk screw holes (4.5 mm, 8.4 mm at 90 deg) through the wall plate, in the smooth STL
+//!   holes=y:z,y:z hole=4.5 sink=8.4        countersunk screw holes (diameters, 90 deg countersink) through the wall plate, in the smooth STL
 //!   from=DIR blur=2                        only re-smooth DIR/mask.bin (no ESO run); blur passes
 //!   target=0.12 step=0.04 sf=4             stop at this share of the frustum, remove 4 % per round, keep SF
 //!   material=petg-printed out=DIR
@@ -70,30 +70,30 @@ fn stl(grid: &Grid, solid: &[bool]) -> Vec<u8> {
 /// surface cut where the whole shape gives back exactly the voxel volume; the kept wall plate and tip pad stay exact boxes (marching tetrahedra on a grid twice as fine). The wall
 /// face (x = 0) and the tip face stay flat: the design is continued one voxel past them, and that skin is
 /// pressed flat. Returns triangles, the level used and the volume of the result in mm3.
-/// The user's standard screw: countersunk, hole 4.5 mm, countersink 8.4 mm at 90 degrees.
+/// The user's standard screw (the default): countersunk, hole 4.5 mm, countersink 8.4 mm at 90 degrees.
 const HOLE_R: f64 = 2.25;
 const SINK_R: f64 = 4.2;
 
 /// Signed distance (approximate inside the cone, exact on the cylinder) to the screw holes through the wall
 /// plate (x = 0 to xb, countersink on the front face x = xb); negative inside a hole. Beyond x = xb + lim
 /// there is no hole, so the cone never cuts an arm.
-fn hole_dist(p: [f64; 3], holes: &[[f64; 2]], xb: f64, lim: f64) -> f64 {
+fn hole_dist(p: [f64; 3], holes: &[[f64; 2]], [hr, sr]: [f64; 2], xb: f64, lim: f64) -> f64 {
     if p[0] > xb + lim {
         return f64::INFINITY;
     }
     holes.iter().map(|[y, z]| {
         let rho = ((p[1] - y).powi(2) + (p[2] - z).powi(2)).sqrt();
-        (rho - HOLE_R).min((rho - SINK_R + xb - p[0]) / std::f64::consts::SQRT_2)
+        (rho - hr).min((rho - sr + xb - p[0]) / std::f64::consts::SQRT_2)
     }).fold(f64::INFINITY, f64::min)
 }
 
 /// Volume of one countersunk hole through a plate xb thick.
-fn hole_volume(xb: f64) -> f64 {
-    let hc = SINK_R - HOLE_R; // 90 degrees: as deep as the radius grows
-    std::f64::consts::PI * (HOLE_R * HOLE_R * (xb - hc) + hc / 3.0 * (SINK_R * SINK_R + SINK_R * HOLE_R + HOLE_R * HOLE_R))
+fn hole_volume(xb: f64, [hr, sr]: [f64; 2]) -> f64 {
+    let hc = sr - hr; // 90 degrees: as deep as the radius grows
+    std::f64::consts::PI * (hr * hr * (xb - hc) + hc / 3.0 * (sr * sr + sr * hr + hr * hr))
 }
 
-fn smooth(grid: &Grid, solid: &[bool], keep: &[bool], passes: usize, holes: &[[f64; 2]], xb: f64) -> (Vec<[[f64; 3]; 3]>, f64, f64) {
+fn smooth(grid: &Grid, solid: &[bool], keep: &[bool], passes: usize, holes: &[[f64; 2]], r: [f64; 2], xb: f64) -> (Vec<[[f64; 3]; 3]>, f64, f64) {
     const M: usize = 4; // empty margin in voxels
     let [nx, ny, nz] = grid.n;
     let d = [nx + 2 * M, ny + 2 * M, nz + 2 * M];
@@ -174,13 +174,13 @@ fn smooth(grid: &Grid, solid: &[bool], keep: &[bool], passes: usize, holes: &[[f
         for a in 0..fd[0] {
             for b in 0..fd[1] {
                 for c in 0..fd[2] {
-                    hd[nidx(a, b, c)] = hole_dist(pos(a, b, c), holes, xb, hf);
+                    hd[nidx(a, b, c)] = hole_dist(pos(a, b, c), holes, r, xb, hf);
                 }
             }
         }
     }
     let reach = nx as f64 * grid.h;
-    let want = solid.iter().filter(|v| **v).count() as f64 * grid.h.powi(3) - holes.len() as f64 * hole_volume(xb);
+    let want = solid.iter().filter(|v| **v).count() as f64 * grid.h.powi(3) - holes.len() as f64 * hole_volume(xb, r);
     let inside_nodes = |thr: f64| {
         let mut n = 0usize;
         for a in 0..fd[0] {
@@ -270,7 +270,7 @@ fn smooth(grid: &Grid, solid: &[bool], keep: &[bool], passes: usize, holes: &[[f
     for p in tris.iter_mut().flatten().filter(|p| p[0] <= xb + 1e-9) {
         for [y, z] in holes {
             let (dy, dz) = (p[1] - y, p[2] - z);
-            let (rho, want) = (dy.hypot(dz), HOLE_R.max(SINK_R - (xb - p[0])));
+            let (rho, want) = (dy.hypot(dz), r[0].max(r[1] - (xb - p[0])));
             if rho > 1e-9 && rho < want {
                 (p[1], p[2]) = (y + dy * want / rho, z + dz * want / rho);
             }
@@ -523,14 +523,18 @@ fn run() -> Result<(), String> {
     // the kept plate is whole voxels: every column whose centre lies within `back`
     let xb = (back / h - 0.5).ceil().max(0.0) * h;
     let holes = parse_holes(o.get("holes").map_or("", String::as_str))?;
+    let (hr, sr) = (num("hole", 2.0 * HOLE_R)? / 2.0, num("sink", 2.0 * SINK_R)? / 2.0);
+    if !(hr > 0.5 && sr > hr) {
+        return Err("hole (mm) above 1 and sink (countersink, mm) above hole".into());
+    }
     for [y, z] in &holes {
-        if xb < SINK_R - HOLE_R + 1.0 || y.abs() + SINK_R > 0.5 * by || z.abs() + SINK_R > 0.5 * bz {
-            return Err(format!("hole {y}:{z}: needs a plate of at least {:.2} mm (it is {xb}) and the countersink inside the plate", SINK_R - HOLE_R + 1.0));
+        if xb < sr - hr + 1.0 || y.abs() + sr > 0.5 * by || z.abs() + sr > 0.5 * bz {
+            return Err(format!("hole {y}:{z}: needs a plate of at least {:.2} mm (it is {xb}) and the countersink inside the plate", sr - hr + 1.0));
         }
         // the screwdriver goes in along x: no arm within the countersink radius plus 2 mm
         let blocked = (0..grid.cells()).filter(|c| solid[*c] && !keep[*c]).any(|c| {
             let p = grid.cell_centre(c);
-            (p[1] - y).hypot(p[2] - z) < SINK_R + 2.0 + 0.5 * h
+            (p[1] - y).hypot(p[2] - z) < sr + 2.0 + 0.5 * h
         });
         if blocked {
             eprintln!("warning: hole {y}:{z}: an arm is in the screwdriver's way");
@@ -542,13 +546,13 @@ fn run() -> Result<(), String> {
         for (t, [y, z]) in screw_tension(&holes, 0.5 * n[1] as f64 * h, 0.5 * n[2] as f64 * h, n[0] as f64 * h, force, side).iter().zip(&holes) {
             let both = t[0] + t[1]; // both cases at once, added: on the safe side
             // the head bears on the countersink cone; it would punch a plug its own size through the plate
-            let (bear, punch) = (both / (std::f64::consts::PI * (SINK_R * SINK_R - HOLE_R * HOLE_R)), both / (std::f64::consts::PI * 2.0 * SINK_R * xb));
+            let (bear, punch) = (both / (std::f64::consts::PI * (sr * sr - hr * hr)), both / (std::f64::consts::PI * 2.0 * sr * xb));
             txt += &format!("  hole {y}:{z}: pull {:.1} N down case, {:.1} N side case, {both:.1} N both = {:.1} kg on the wall plug; shear {shear:.1} N; head on the plate: bearing {bear:.1} MPa, punching shear {punch:.2} MPa (SF {:.0} / {:.0} on {strength} MPa)\n", t[0], t[1], both / 9.81, strength / bear, 0.577 * strength / punch);
         }
         print!("{txt}");
         std::fs::write(format!("{out}/screws.txt"), &txt).map_err(|e| e.to_string())?;
     }
-    let (tris, thr, vol) = smooth(&grid, &solid, &keep, num("blur", 2.0)? as usize, &holes, xb);
+    let (tris, thr, vol) = smooth(&grid, &solid, &keep, num("blur", 2.0)? as usize, &holes, [hr, sr], xb);
     std::fs::write(format!("{out}/bracket-smooth.stl"), tris_stl(&tris)).map_err(|e| e.to_string())?;
     println!("smooth: {} triangles, level {thr:.3}, {:.1} cm3 against {:.1} cm3 as voxels", tris.len(), vol / 1000.0, count as f64 * cell_cm3);
     if from.is_some() {
@@ -606,11 +610,11 @@ mod tests {
     #[test]
     fn smooth_keeps_the_volume_and_the_flat_faces() {
         let g = Grid { origin: [0.0, -3.0, -3.0], h: 1.0, n: [6, 6, 6] };
-        let (tris, _, vol) = smooth(&g, &vec![true; 216], &vec![false; 216], 2, &[], 0.0);
+        let (tris, _, vol) = smooth(&g, &vec![true; 216], &vec![false; 216], 2, &[], [HOLE_R, SINK_R], 0.0);
         assert!((vol - 216.0).abs() < 0.05 * 216.0, "volume {vol}");
         assert!(tris.iter().flatten().all(|p| (0.0..=6.0).contains(&p[0])));
         // a kept block stays an exact block
-        let (tris, _, vol) = smooth(&g, &vec![true; 216], &vec![true; 216], 2, &[], 0.0);
+        let (tris, _, vol) = smooth(&g, &vec![true; 216], &vec![true; 216], 2, &[], [HOLE_R, SINK_R], 0.0);
         assert!((vol - 216.0).abs() < 0.03 * 216.0, "kept volume {vol}"); // the edges lose a little
         assert!(tris.iter().flatten().all(|p| p[1].abs() <= 3.001 && p[2].abs() <= 3.001));
     }
@@ -630,9 +634,9 @@ mod tests {
         // a 5 mm wall plate (kept) on a 10 mm grid: its front face is free, as on the bracket
         let g = Grid { origin: [0.0, -6.0, -6.0], h: 1.0, n: [10, 12, 12] };
         let plate: Vec<bool> = (0..g.cells()).map(|c| g.cell_ijk(c)[0] < 5).collect();
-        let (_, _, plain) = smooth(&g, &plate, &plate, 2, &[], 5.0);
-        let (tris, _, holed) = smooth(&g, &plate, &plate, 2, &[[0.0, 0.0]], 5.0);
-        let hv = hole_volume(5.0);
+        let (_, _, plain) = smooth(&g, &plate, &plate, 2, &[], [HOLE_R, SINK_R], 5.0);
+        let (tris, _, holed) = smooth(&g, &plate, &plate, 2, &[[0.0, 0.0]], [HOLE_R, SINK_R], 5.0);
+        let hv = hole_volume(5.0, [HOLE_R, SINK_R]);
         assert!(((plain - holed) - hv).abs() < 0.08 * hv, "removed {} against {hv}", plain - holed);
         // on the straight part of the hole every corner lies on the 4.5 mm circle
         let wall: Vec<f64> = tris.iter().flatten().filter(|p| p[0] > 0.5 && p[0] < 2.5).map(|p| p[1].hypot(p[2])).filter(|r| *r < 3.5).collect();
