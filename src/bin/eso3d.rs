@@ -425,6 +425,27 @@ fn simplify(p: &[[f64; 3]], tol: f64) -> Vec<[f64; 3]> {
     }
 }
 
+/// Chaikin corner cutting, `passes` times: every bend becomes a smooth arc, the two ends stay where they are.
+fn round_bends(p: &[[f64; 3]], passes: usize) -> Vec<[f64; 3]> {
+    let mut p = p.to_vec();
+    for _ in 0..passes {
+        if p.len() < 3 {
+            break;
+        }
+        let mut q = vec![p[0]];
+        for w in p.windows(2) {
+            let at = |t: f64| [0, 1, 2].map(|k| w[0][k] + t * (w[1][k] - w[0][k]));
+            q.extend([at(0.25), at(0.75)]);
+        }
+        // the cut next to each end would move the end: keep the true ends instead
+        q.remove(1);
+        q.pop();
+        q.extend(p.last().copied());
+        p = q;
+    }
+    p
+}
+
 /// One round bar: straight pieces through `pts`, radius `r`, carrying the volume `vol` (mm3) of its pillar.
 #[derive(Clone, Debug)]
 struct Bar {
@@ -549,7 +570,7 @@ fn bars(grid: &Grid, solid: &[bool], keep: &[bool]) -> (Vec<Bar>, f64) {
         pts.extend(chain.iter().map(|c| grid.cell_centre(*c)));
         pts.push(nodes[*b].0);
         pts.extend(nodes[*b].1);
-        let mut bar = Bar { pts: simplify(&pts, grid.h), vol: cell * (count[i] + count[e + a] / degree[*a] + count[e + b] / degree[*b]), r: 0.0 };
+        let mut bar = Bar { pts: round_bends(&simplify(&pts, grid.h), 3), vol: cell * (count[i] + count[e + a] / degree[*a] + count[e + b] / degree[*b]), r: 0.0 };
         bar.r = (bar.vol / (std::f64::consts::PI * bar.length().max(grid.h))).sqrt();
         bar
     }).collect();
@@ -573,6 +594,9 @@ fn bar_mesh(grid: &Grid, keep: &[bool], bars: &[Bar], blend: f64, res: f64, hole
         let hi = [0, 1, 2].map(|a| cells.iter().map(|c| grid.cell_centre(*c)[a] + 0.5 * grid.h).fold(f64::NEG_INFINITY, f64::max));
         (!cells.is_empty()).then_some((lo, hi))
     }).collect();
+    let reach_box: Vec<([f64; 3], [f64; 3])> = bars.iter().map(|b| {
+        ([0, 1, 2].map(|a| b.pts.iter().map(|q| q[a]).fold(f64::INFINITY, f64::min)), [0, 1, 2].map(|a| b.pts.iter().map(|q| q[a]).fold(f64::NEG_INFINITY, f64::max)))
+    }).collect();
     let sdf = |p: [f64; 3]| {
         let mut d = f64::INFINITY;
         for (lo, hi) in &boxes {
@@ -580,21 +604,31 @@ fn bar_mesh(grid: &Grid, keep: &[bool], bars: &[Bar], blend: f64, res: f64, hole
             let out = q.map(|v| v.max(0.0));
             d = smin(d, dot(out, out).sqrt() + q[0].max(q[1]).max(q[2]).min(0.0), blend);
         }
-        for b in bars {
+        for (b, (blo, bhi)) in bars.iter().zip(&reach_box) {
+            // a bar whose box is further than the fillet reaches cannot change d
+            let out: [f64; 3] = [0, 1, 2].map(|a| (blo[a] - p[a]).max(p[a] - bhi[a]).max(0.0));
+            if dot(out, out).sqrt() - b.r > d + blend {
+                continue;
+            }
             d = smin(d, b.dist(p) - b.r, blend);
         }
-        d.max(-p[0]).max(p[0] - reach).max(-hole_dist(p, holes, r, xb, res))
+        // hole edges get a small round (smooth cut): a sharp rim comes out of the mesher as a saw edge
+        -smin(-d.max(-p[0]).max(p[0] - reach), hole_dist(p, holes, r, xb, res), 1.0)
     };
     let pad = bars.iter().map(|b| b.r).fold(0.0, f64::max) + blend + 2.0 * res;
-    let lo = [-res, grid.origin[1] - pad, grid.origin[2] - pad];
-    let hi = [reach + res, grid.origin[1] + grid.n[1] as f64 * grid.h + pad, grid.origin[2] + grid.n[2] as f64 * grid.h + pad];
+    // half a step off in x, so no node lies on the wall or tip face (the crossing then lands exactly on it)
+    let lo = [-1.5 * res, grid.origin[1] - pad, grid.origin[2] - pad];
+    let hi = [reach + 1.5 * res, grid.origin[1] + grid.n[1] as f64 * grid.h + pad, grid.origin[2] + grid.n[2] as f64 * grid.h + pad];
     let fd = [0, 1, 2].map(|a| ((hi[a] - lo[a]) / res).ceil() as usize + 1);
     let pos = |a: usize, b: usize, c: usize| [lo[0] + a as f64 * res, lo[1] + b as f64 * res, lo[2] + c as f64 * res];
     let mut field = vec![0.0; fd[0] * fd[1] * fd[2]];
     for a in 0..fd[0] {
         for b in 0..fd[1] {
             for c in 0..fd[2] {
-                field[(a * fd[1] + b) * fd[2] + c] = -sdf(pos(a, b, c));
+                // A node on (or almost on) the surface gives slivers and flat triangles, which viewers shade
+                // as black specks: move it off the surface by a tenth of a step (at most 0.1 res of shape change).
+                let v = -sdf(pos(a, b, c));
+                field[(a * fd[1] + b) * fd[2] + c] = if v.abs() >= 0.1 * res { v } else if v >= 0.0 { 0.1 * res } else { -0.1 * res };
             }
         }
     }
@@ -1112,6 +1146,16 @@ mod tests {
     }
 
     #[test]
+    fn bends_become_arcs_and_the_ends_stay() {
+        let p = round_bends(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]], 3);
+        assert_eq!((p[0], p[p.len() - 1]), ([0.0; 3], [10.0, 10.0, 0.0]));
+        let turn = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| { let (u, v) = (sub(b, a), sub(c, b)); (dot(u, v) / (dot(u, u) * dot(v, v)).sqrt()).acos().to_degrees() };
+        let sharpest = p.windows(3).map(|w| turn(w[0], w[1], w[2])).fold(0.0, f64::max);
+        assert!(sharpest < 20.0, "a 90 degree bend in steps of at most {sharpest:.1} degrees");
+        assert_eq!(round_bends(&[[0.0; 3], [1.0, 0.0, 0.0]], 3).len(), 2);
+    }
+
+    #[test]
     fn simple_points() {
         let mut nb = [false; 27];
         nb[13] = true;
@@ -1144,6 +1188,12 @@ mod tests {
         assert!((volume(&tris) - want).abs() < 0.05 * want, "{} against {want}", volume(&tris));
         let (pos, tri) = index(&tris);
         assert!(pos.len() < tris.len() && tri.len() == tris.len());
+        // closed: every edge once each way; no slivers
+        let edges: std::collections::HashSet<(u32, u32)> = tri.iter().flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]).collect();
+        assert_eq!(edges.len(), 3 * tri.len(), "an edge is used twice the same way");
+        assert!(edges.iter().all(|(a, b)| edges.contains(&(*b, *a))), "the mesh has an open edge");
+        let tiny = tris.iter().filter(|t| { let c = cross(sub(t[1], t[0]), sub(t[2], t[0])); dot(c, c).sqrt() / 2.0 < 1e-4 }).count();
+        assert_eq!(tiny, 0, "slivers");
     }
 
     #[test]
