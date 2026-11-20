@@ -249,6 +249,38 @@ pub enum Region {
     Side { axis: usize, max: bool, depth: f64 },
     /// Material nodes whose distance to a line (point, direction) lies in [r_in, r_out].
     Ring { point: P3, dir: P3, r_in: f64, r_out: f64 },
+    /// Material nodes within `r` of the axis from `point` along `dir`, between 0 and `len` along it
+    /// (the material a screw clamps).
+    Cylinder { point: P3, dir: P3, r: f64, len: f64 },
+    /// Material nodes in any of these.
+    Union(Vec<Region>),
+}
+
+/// Distance along the unit direction of `dir` and distance from that axis, of p seen from `point`.
+fn axial(p: &P3, point: &P3, dir: &P3) -> (f64, f64) {
+    let len = (dir.iter().map(|v| v * v).sum::<f64>()).sqrt().max(f64::MIN_POSITIVE);
+    let d = dir.map(|v| v / len);
+    let r = [p[0] - point[0], p[1] - point[1], p[2] - point[2]];
+    let along: f64 = r.iter().zip(&d).map(|(a, b)| a * b).sum();
+    (along, (r.iter().map(|v| v * v).sum::<f64>() - along * along).max(0.0).sqrt())
+}
+
+fn inside(region: &Region, p: &P3, lo: &P3, hi: &P3) -> bool {
+    match region {
+        Region::Side { axis, max, depth } => {
+            let v = c3(p, *axis);
+            if *max { v >= c3(hi, *axis) - depth } else { v <= c3(lo, *axis) + depth }
+        }
+        Region::Ring { point, dir, r_in, r_out } => {
+            let perp = axial(p, point, dir).1;
+            perp >= *r_in && perp <= *r_out
+        }
+        Region::Cylinder { point, dir, r, len } => {
+            let (along, perp) = axial(p, point, dir);
+            perp <= *r && (0.0..=*len).contains(&along)
+        }
+        Region::Union(parts) => parts.iter().any(|q| inside(q, p, lo, hi)),
+    }
 }
 
 pub struct Case {
@@ -307,23 +339,7 @@ pub struct Analysis {
 fn select(region: &Region, grid: &Grid, in_material: &[bool], lo: &P3, hi: &P3) -> Vec<usize> {
     (0..grid.nodes())
         .filter(|n| in_material.get(*n).copied().unwrap_or(false))
-        .filter(|n| {
-            let p = grid.node_pos(*n);
-            match region {
-                Region::Side { axis, max, depth } => {
-                    let v = c3(&p, *axis);
-                    if *max { v >= c3(hi, *axis) - depth } else { v <= c3(lo, *axis) + depth }
-                }
-                Region::Ring { point, dir, r_in, r_out } => {
-                    let len = (dir.iter().map(|v| v * v).sum::<f64>()).sqrt().max(f64::MIN_POSITIVE);
-                    let d = dir.map(|v| v / len);
-                    let r = [p[0] - point[0], p[1] - point[1], p[2] - point[2]];
-                    let along: f64 = r.iter().zip(&d).map(|(a, b)| a * b).sum();
-                    let perp = (r.iter().map(|v| v * v).sum::<f64>() - along * along).max(0.0).sqrt();
-                    perp >= *r_in && perp <= *r_out
-                }
-            }
-        })
+        .filter(|n| inside(region, &grid.node_pos(*n), lo, hi))
         .collect()
 }
 
@@ -873,6 +889,16 @@ pub fn box_stl(lo: P3, hi: P3) -> (Vec<P3>, Vec<[u32; 3]>) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
     use super::*;
+
+    #[test]
+    fn cylinder_and_union_regions() {
+        let (lo, hi) = ([0.0; 3], [10.0; 3]);
+        let screw = |z: f64| Region::Cylinder { point: [0.0, 0.0, z], dir: [1.0, 0.0, 0.0], r: 2.0, len: 5.0 };
+        let both = Region::Union(vec![screw(3.0), screw(-3.0)]);
+        assert!(inside(&both, &[4.0, 1.0, 3.5], &lo, &hi) && inside(&both, &[0.0, 0.0, -3.0], &lo, &hi));
+        assert!(!inside(&both, &[6.0, 0.0, 3.0], &lo, &hi), "past the plate");
+        assert!(!inside(&both, &[1.0, 0.0, 0.0], &lo, &hi), "between the screws");
+    }
 
     #[test]
     fn brick_is_symmetric_with_six_rigid_modes() {
