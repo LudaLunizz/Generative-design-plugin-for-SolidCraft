@@ -339,6 +339,20 @@ fn open(grid: &Grid, solid: &[bool], k: usize) -> Vec<bool> {
     (0..grid.cells()).map(|c| block(c, true, &|n| eroded[n], false)).collect()
 }
 
+/// Screw tension (N) per hole for the down and the side case: the plate is taken as rigid and tips about
+/// the plate edge that presses on the wall (bottom edge for a down load, the side edge the load points to
+/// for a side load); each screw pulls in proportion to its distance from that edge. Load at the tip face.
+fn screw_tension(holes: &[[f64; 2]], half_y: f64, half_z: f64, reach: f64, down: f64, side: f64) -> Vec<[f64; 2]> {
+    let share = |d: &[f64], m: f64| {
+        let s: f64 = d.iter().map(|v| v * v).sum();
+        d.iter().map(|v| if s > 0.0 { m * v / s } else { f64::INFINITY }).collect::<Vec<f64>>()
+    };
+    let dz: Vec<f64> = holes.iter().map(|h| h[1] + half_z).collect();
+    let dy: Vec<f64> = holes.iter().map(|h| (half_y * side.signum() - h[0]).abs()).collect();
+    let (t_down, t_side) = (share(&dz, down.abs() * reach), share(&dy, side.abs() * reach));
+    t_down.iter().zip(&t_side).map(|(a, b)| [*a, *b]).collect()
+}
+
 /// "y:z,y:z" (mm on the wall face) -> hole centres; empty -> none.
 fn parse_holes(s: &str) -> Result<Vec<[f64; 2]>, String> {
     s.split(',').filter(|t| !t.is_empty()).map(|t| {
@@ -522,6 +536,18 @@ fn run() -> Result<(), String> {
             eprintln!("warning: hole {y}:{z}: an arm is in the screwdriver's way");
         }
     }
+    if !holes.is_empty() {
+        let mut txt = format!("Screw pull-out (rigid plate tipping about the edge that presses on the wall; load {force} N down / {side} N side at x = {:.0} mm):\n", n[0] as f64 * h);
+        let shear = (force * force + side * side).sqrt() / holes.len() as f64;
+        for (t, [y, z]) in screw_tension(&holes, 0.5 * n[1] as f64 * h, 0.5 * n[2] as f64 * h, n[0] as f64 * h, force, side).iter().zip(&holes) {
+            let both = t[0] + t[1]; // both cases at once, added: on the safe side
+            // the head bears on the countersink cone; it would punch a plug its own size through the plate
+            let (bear, punch) = (both / (std::f64::consts::PI * (SINK_R * SINK_R - HOLE_R * HOLE_R)), both / (std::f64::consts::PI * 2.0 * SINK_R * xb));
+            txt += &format!("  hole {y}:{z}: pull {:.1} N down case, {:.1} N side case, {both:.1} N both = {:.1} kg on the wall plug; shear {shear:.1} N; head on the plate: bearing {bear:.1} MPa, punching shear {punch:.2} MPa (SF {:.0} / {:.0} on {strength} MPa)\n", t[0], t[1], both / 9.81, strength / bear, 0.577 * strength / punch);
+        }
+        print!("{txt}");
+        std::fs::write(format!("{out}/screws.txt"), &txt).map_err(|e| e.to_string())?;
+    }
     let (tris, thr, vol) = smooth(&grid, &solid, &keep, num("blur", 2.0)? as usize, &holes, xb);
     std::fs::write(format!("{out}/bracket-smooth.stl"), tris_stl(&tris)).map_err(|e| e.to_string())?;
     println!("smooth: {} triangles, level {thr:.3}, {:.1} cm3 against {:.1} cm3 as voxels", tris.len(), vol / 1000.0, count as f64 * cell_cm3);
@@ -587,6 +613,16 @@ mod tests {
         let (tris, _, vol) = smooth(&g, &vec![true; 216], &vec![true; 216], 2, &[], 0.0);
         assert!((vol - 216.0).abs() < 0.03 * 216.0, "kept volume {vol}"); // the edges lose a little
         assert!(tris.iter().flatten().all(|p| p[1].abs() <= 3.001 && p[2].abs() <= 3.001));
+    }
+
+    #[test]
+    fn screw_tension_matches_the_lever_by_hand() {
+        let t = screw_tension(&[[-6.5, 41.0], [-6.5, -41.0]], 40.0, 50.0, 150.0, 50.0, 15.0);
+        let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(near(t[0][0], 7500.0 * 91.0 / (91.0 * 91.0 + 81.0)) && near(t[1][0], 7500.0 * 9.0 / (91.0 * 91.0 + 81.0)), "{t:?}");
+        assert!(near(t[0][1], 2250.0 / 93.0) && near(t[1][1], 2250.0 / 93.0), "{t:?}");
+        // a side load the other way tips about the other edge: 33.5 mm instead of 46.5
+        assert!(near(screw_tension(&[[-6.5, 0.0]], 40.0, 50.0, 150.0, 0.0, -15.0)[0][1], 2250.0 / 33.5));
     }
 
     #[test]
