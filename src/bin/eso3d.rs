@@ -14,6 +14,9 @@
 //!   bars=1 [blend=3 bar_res=0.75 rounds=4] every pillar of the design (also with from=DIR) becomes a round bar of the same
 //!                                          volume between its two ends; checked on check_voxel, bars below sf grow
 //!                                          (at most `rounds` times); fillets of `blend` mm, mesh grid bar_res mm
+//!   size=1                                 bars also get thinner where SF > 1.3 x sf (not below min_member); keeps the lightest round that passes
+//!   plate=frame [strip=12] hold=screws     wall plate as pads round screws and bar roots joined by strips; held only at the
+//!                                          screws (default with a frame; hold=wall glues the whole wall face as before)
 //! check and bars also write CASE-stress.ply (colour per point, for Blender) and CASE-stress-{iso,side,top}.png.
 //! Stops at the target share or just before the safety factor (away from the load/support zones) drops
 //! below sf, and writes DIR/bracket.stl (voxel faces, wall at x=0, Z up), report.json and heat maps.
@@ -577,6 +580,33 @@ fn bars(grid: &Grid, solid: &[bool], keep: &[bool]) -> (Vec<Bar>, f64) {
     (out, lost * cell)
 }
 
+/// The frame plate as flat capsules (y:z end points, radius); empty when `strip` <= 0.
+fn plate_frame(bars: &[Bar], holes: &[[f64; 2]], r: [f64; 2], xb: f64, strip: f64) -> Vec<([f64; 2], [f64; 2], f64)> {
+    let mut caps = Vec::new();
+    if strip <= 0.0 {
+        return caps;
+    }
+    let mut screws = holes.to_vec();
+    screws.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    for w in screws.windows(2) {
+        caps.push((w[0], w[1], 0.5 * strip));
+    }
+    for sc in &screws {
+        caps.push((*sc, *sc, r[1] + 4.0)); // round the countersink, room for the head
+    }
+    for b in bars {
+        for end in [b.pts.first(), b.pts.last()].into_iter().flatten().filter(|e| e[0] < xb) {
+            let root = [end[1], end[2]];
+            caps.push((root, root, b.r + 3.0));
+            let near = screws.iter().min_by(|a, c| (a[0] - root[0]).hypot(a[1] - root[1]).total_cmp(&(c[0] - root[0]).hypot(c[1] - root[1])));
+            if let Some(sc) = near {
+                caps.push((root, *sc, 0.5 * strip));
+            }
+        }
+    }
+    caps
+}
+
 /// Smooth minimum: the union of two shapes with a round fillet of about `k` mm where they meet.
 fn smin(a: f64, b: f64, k: f64) -> f64 {
     let t = if k > 0.0 { (k - (a - b).abs()).max(0.0) / k } else { 0.0 };
@@ -586,14 +616,17 @@ fn smin(a: f64, b: f64, k: f64) -> f64 {
 /// The bar design as a closed mesh: the bars, the kept plate and pad as boxes around their voxels, joined with
 /// fillets of `blend` mm, wall and tip faces flat, screw holes cut; marching tetrahedra on a `res` mm grid.
 #[allow(clippy::too_many_arguments)]
-fn bar_mesh(grid: &Grid, keep: &[bool], bars: &[Bar], blend: f64, res: f64, holes: &[[f64; 2]], r: [f64; 2], xb: f64) -> Vec<[[f64; 3]; 3]> {
+/// `strip` > 0: the wall plate is a frame instead of the full box: pads round the screws and the bar roots,
+/// strips `strip` mm wide from every bar root to its nearest screw and from screw to screw, `xb` thick.
+fn bar_mesh(grid: &Grid, keep: &[bool], bars: &[Bar], blend: f64, res: f64, holes: &[[f64; 2]], r: [f64; 2], xb: f64, strip: f64) -> Vec<[[f64; 3]; 3]> {
     let reach = grid.n[0] as f64 * grid.h;
     let boxes: Vec<([f64; 3], [f64; 3])> = [false, true].iter().filter_map(|tip| {
         let cells: Vec<usize> = (0..grid.cells()).filter(|c| keep[*c] && (grid.cell_centre(*c)[0] > 0.5 * reach) == *tip).collect();
         let lo = [0, 1, 2].map(|a| cells.iter().map(|c| grid.cell_centre(*c)[a] - 0.5 * grid.h).fold(f64::INFINITY, f64::min));
         let hi = [0, 1, 2].map(|a| cells.iter().map(|c| grid.cell_centre(*c)[a] + 0.5 * grid.h).fold(f64::NEG_INFINITY, f64::max));
-        (!cells.is_empty()).then_some((lo, hi))
+        (!cells.is_empty() && (*tip || strip <= 0.0)).then_some((lo, hi))
     }).collect();
+    let frame = plate_frame(bars, holes, r, xb, strip);
     let reach_box: Vec<([f64; 3], [f64; 3])> = bars.iter().map(|b| {
         ([0, 1, 2].map(|a| b.pts.iter().map(|q| q[a]).fold(f64::INFINITY, f64::min)), [0, 1, 2].map(|a| b.pts.iter().map(|q| q[a]).fold(f64::NEG_INFINITY, f64::max)))
     }).collect();
@@ -603,6 +636,11 @@ fn bar_mesh(grid: &Grid, keep: &[bool], bars: &[Bar], blend: f64, res: f64, hole
             let q: [f64; 3] = [0, 1, 2].map(|a| (p[a] - 0.5 * (lo[a] + hi[a])).abs() - 0.5 * (hi[a] - lo[a]));
             let out = q.map(|v| v.max(0.0));
             d = smin(d, dot(out, out).sqrt() + q[0].max(q[1]).max(q[2]).min(0.0), blend);
+        }
+        for (a, b, rad) in &frame {
+            let flat = seg_dist([0.0, p[1], p[2]], [0.0, a[0], a[1]], [0.0, b[0], b[1]]) - rad;
+            // small round on the frame's edges, as on the hole rims
+            d = smin(d, -smin(-flat, p[0].min(xb - p[0]), 1.0), blend); // inside the strip and between the faces
         }
         for (b, (blo, bhi)) in bars.iter().zip(&reach_box) {
             // a bar whose box is further than the fillet reaches cannot change d
@@ -875,15 +913,15 @@ fn run() -> Result<(), String> {
         Case { name: "side".into(), force: [0.0, side, 0.0], moment: [0.0; 3] },
     ];
     let cv = num("check_voxel", 1.25)?;
-    let analyse_mesh = |pos: &[[f64; 3]], tri: &[[u32; 3]]| -> Result<(Grid, Vec<bool>, Analysis), String> {
+    let analyse_mesh = |pos: &[[f64; 3]], tri: &[[u32; 3]], fixed: &Region| -> Result<(Grid, Vec<bool>, Analysis), String> {
         let (g, sol) = voxelize(pos, tri, cv)?;
-        let setup = Setup { grid: &g, solid: &sol, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &Region::Side { axis: 0, max: true, depth: 0.5 * cv }, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true };
+        let setup = Setup { grid: &g, solid: &sol, e_mpa: e_gpa * 1000.0, nu, fixed, load: &Region::Side { axis: 0, max: true, depth: 0.5 * cv }, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true };
         let an = analyse(&setup, &cases, |_| {})?;
         Ok((g, sol, an))
     };
     if let Some(file) = o.get("check") {
         let (pos, tri) = read_stl(&std::fs::read(file).map_err(|e| format!("{file}: {e}"))?)?;
-        let (g, sol, fin) = analyse_mesh(&pos, &tri)?;
+        let (g, sol, fin) = analyse_mesh(&pos, &tri, &fixed)?;
         let cells = sol.iter().filter(|v| **v).count();
         eprintln!("{file}: {}x{}x{} voxels of {cv} mm, {cells} cells = {:.1} cm3", g.n[0], g.n[1], g.n[2], cells as f64 * cv.powi(3) / 1000.0);
         {
@@ -1036,45 +1074,105 @@ fn run() -> Result<(), String> {
         }
         // the kept pad starts here; plate and pad are not bars, their peaks are where the load and supports go in
         let pad_from = (0..grid.cells()).filter(|c| keep[*c] && grid.cell_centre(*c)[0] > 0.5 * reach).map(|c| grid.cell_centre(c)[0] - 0.5 * h).fold(reach, f64::min);
+        let two_way = o.get("size").is_some_and(|v| v != "0");
+        let r_min = 0.5 * num("min_member", 5.0)?;
+        let frame = o.get("plate").map_or("box", String::as_str);
+        let mut strip = match frame {
+            "box" => 0.0,
+            "frame" => num("strip", 12.0)?,
+            _ => return Err("plate: box or frame".into()),
+        };
+        let hold = o.get("hold").map_or(if strip > 0.0 { "screws" } else { "wall" }, String::as_str);
+        let fixed_bars = match hold {
+            "wall" => Region::Side { axis: 0, max: false, depth: 0.5 * h }, // as the earlier runs
+            // the material each screw clamps: round its axis out to the countersink plus 1.5 mm, through the plate
+            "screws" if !holes.is_empty() => Region::Union(holes.iter().map(|[y, z]| Region::Cylinder { point: [0.0, *y, *z], dir: [1.0, 0.0, 0.0], r: sr + 1.5, len: xb }).collect()),
+            _ => return Err("hold: wall, or screws (needs holes=)".into()),
+        };
+        if strip > 0.0 && (holes.is_empty() || !(4.0..=40.0).contains(&strip)) {
+            return Err("plate=frame needs holes= and strip 4-40 mm".into());
+        }
         let mut round = 0;
-        let (tris, pos, tri, g, an, peak) = loop {
-            let tris = bar_mesh(&grid, &keep, &list, blend, res, &holes, [hr, sr], xb);
+        type State = (Vec<[[f64; 3]; 3]>, Vec<[f64; 3]>, Vec<[u32; 3]>, Grid, Analysis, Vec<f64>, f64, Vec<Bar>, usize, f64);
+        let (mut best, mut last): (Option<State>, Option<State>) = (None, None);
+        loop {
+            let tris = bar_mesh(&grid, &keep, &list, blend, res, &holes, [hr, sr], xb, strip);
             let (pos, tri) = index(&tris);
-            let (g, sol, an) = analyse_mesh(&pos, &tri)?;
-            // each bar's peak: the material cells nearest to it, outside the kept plate and pad
+            let (g, sol, an) = analyse_mesh(&pos, &tri, &fixed_bars)?;
+            // each bar's peak: the material cells nearest to it, outside the kept plate and pad; the plate's own
+            // peak away from where it is held (the wall face, or round the screws)
             let mut peak = vec![0.0f64; list.len()];
+            let mut plate_peak = 0.0f64;
             for c in (0..g.cells()).filter(|c| sol[*c]) {
                 let p = g.cell_centre(c);
-                if p[0] < xb || p[0] > pad_from {
+                let worst = an.cases.iter().map(|k| k.vm[c]).filter(|v| v.is_finite()).fold(0.0, f64::max);
+                if p[0] < xb {
+                    let held = if hold == "wall" { p[0] < 2.0 * cv } else { holes.iter().any(|[y, z]| (p[1] - y).hypot(p[2] - z) < sr + 1.5 + 2.0 * cv) };
+                    if !held {
+                        plate_peak = plate_peak.max(worst);
+                    }
+                    continue;
+                }
+                if p[0] > pad_from {
                     continue;
                 }
                 let near = list.iter().enumerate().map(|(i, b)| (i, b.dist(p) - b.r)).min_by(|a, b| a.1.total_cmp(&b.1));
                 if let Some((i, d)) = near && d < cv {
-                    peak[i] = an.cases.iter().map(|k| k.vm[c]).filter(|v| v.is_finite()).fold(peak[i], f64::max);
+                    peak[i] = peak[i].max(worst);
                 }
             }
-            let sfs: Vec<String> = an.cases.iter().map(|k| format!("{} SF {:.1}, tip {:.2} mm", k.name, strength / k.max_vm_away.max(1e-12), k.max_disp)).collect();
-            let weak: Vec<usize> = (0..list.len()).filter(|i| strength / peak[*i].max(1e-12) < sf).collect();
-            eprintln!("bars round {round}: {:.1} cm3, {}; {} bars below SF {sf}, {:.0} s", volume(&tris) / 1000.0, sfs.join("; "), weak.len(), t0.elapsed().as_secs_f64());
-            if weak.is_empty() || round >= rounds {
-                break (tris, pos, tri, g, an, peak);
+            let sf_of = |v: f64| strength / v.max(1e-12);
+            let sfs: Vec<String> = an.cases.iter().map(|k| format!("{} SF {:.1}, tip {:.2} mm", k.name, sf_of(k.max_vm_away), k.max_disp)).collect();
+            let weak = (0..list.len()).filter(|i| sf_of(peak[*i]) < sf).count();
+            let slack = (0..list.len()).filter(|i| sf_of(peak[*i]) > 1.3 * sf && list[*i].r > r_min + 1e-9).count();
+            let vol = volume(&tris);
+            eprintln!("bars round {round}: {:.1} cm3, {}; plate SF {:.1} (strips {strip:.1} mm); {weak} bars below SF {sf}, {slack} well above, {:.0} s", vol / 1000.0, sfs.join("; "), sf_of(plate_peak), t0.elapsed().as_secs_f64());
+            // the frame's strips are sized too: plate bending stress goes with 1 / width
+            let plate_sf = sf_of(plate_peak);
+            let plate_off = strip > 0.0 && (plate_sf < sf || (two_way && plate_sf > 1.3 * sf && strip > 8.0));
+            let stop = round >= rounds || (weak == 0 && !plate_off && (!two_way || slack == 0));
+            let next_strip = if plate_off { (strip * (1.1 * sf / plate_sf).clamp(0.8, 1.6)).clamp(8.0, 40.0) } else { strip };
+            // bending: stress goes with 1/r^3; a thinner bar aims a little above the target SF
+            let next: Vec<f64> = list.iter().zip(&peak).map(|(b, pk)| {
+                let s_now = sf_of(*pk);
+                if s_now < sf {
+                    b.r * (sf * pk / strength).cbrt().clamp(1.05, 1.5)
+                } else if two_way && s_now > 1.3 * sf {
+                    (b.r * (1.1 * sf * pk / strength).cbrt().clamp(0.7, 0.95)).max(r_min)
+                } else {
+                    b.r
+                }
+            }).collect();
+            let state = (tris, pos, tri, g, an, peak, plate_peak, list.clone(), round, strip);
+            if weak == 0 && sf_of(plate_peak) >= sf && best.as_ref().is_none_or(|b| vol < volume(&b.0)) {
+                best = Some(state);
+            } else {
+                last = Some(state);
             }
-            for i in weak {
-                list[i].r *= (sf * peak[i] / strength).cbrt().clamp(1.05, 1.5); // bending: stress goes with 1/r^3
+            if stop {
+                break;
+            }
+            strip = next_strip;
+            for (b, r) in list.iter_mut().zip(next) {
+                b.r = r;
             }
             round += 1;
-        };
+        }
+        let passed = best.is_some();
+        let (tris, pos, tri, g, an, peak, plate_peak, list, used, strip) = best.or(last).ok_or("no bar round ran")?;
         std::fs::write(format!("{out}/bars.stl"), tris_stl(&tris)).map_err(|e| e.to_string())?;
         let v = volume(&tris);
-        let mut rep = format!("Round bars from {}: {} pillars, each a round bar of its own voxel volume between its ends (fillets {blend} mm, grown {round} times where SF < {sf})\n", from.as_deref().unwrap_or("this run"), list.len());
+        let mut rep = format!("Round bars from {}: {} pillars, each a round bar of its own voxel volume between its ends (fillets {blend} mm); sizing {} to SF {sf}, {round} rounds, kept round {used}{}\n", from.as_deref().unwrap_or("this run"), list.len(), if two_way { "both ways (thinner and thicker)" } else { "only thicker" }, if passed { " (the lightest that passes)" } else { " (NONE PASSED: the last one)" });
+        rep += &format!("Wall plate: {}, {xb} mm thick; held {}\n", if strip > 0.0 { format!("frame (pads round screws and bar roots, {strip:.1} mm strips)") } else { "full box".into() }, if hold == "wall" { "on the whole wall face" } else { "only at the screws (the material each screw clamps; no wall contact, so on the safe side)" });
         for (i, b) in list.iter().enumerate() {
             let (a, z) = (b.pts.first().copied().unwrap_or_default(), b.pts.last().copied().unwrap_or_default());
-            rep += &format!("  bar {i:>2}: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0}), {} bends, {:.0} mm long, pillar {:.2} cm3 -> diameter {:.1} mm, now {:.1} mm, peak {:.2} MPa (SF {:.1})\n", a[0], a[1], a[2], z[0], z[1], z[2], b.pts.len().saturating_sub(2), b.length(), b.vol / 1000.0, 2.0 * r0[i], 2.0 * b.r, peak[i], strength / peak[i].max(1e-12));
+            rep += &format!("  bar {i:>2}: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0}), {:.0} mm long, pillar {:.2} cm3 -> diameter {:.1} mm, now {:.1} mm, peak {:.2} MPa (SF {:.1})\n", a[0], a[1], a[2], z[0], z[1], z[2], b.length(), b.vol / 1000.0, 2.0 * r0[i], 2.0 * b.r, peak[i], strength / peak[i].max(1e-12));
         }
+        rep += &format!("  plate: peak {plate_peak:.2} MPa (SF {:.1}) away from where it is held\n", strength / plate_peak.max(1e-12));
         for c in &an.cases {
             rep += &format!("{}: away peak {:.2} MPa (SF {:.1} on {strength} MPa), tip moves {:.3} mm (check on {cv} mm voxels)\n", c.name, c.max_vm_away, strength / c.max_vm_away.max(1e-12), c.max_disp);
         }
-        rep += "  (a bar's peak counts only material outside the kept plate and pad; the away peak below also counts inside them)\n";
+        rep += "  (a bar's peak counts only material outside the plate and the tip pad; the away peak also counts inside them)\n";
         rep += &format!("bars.stl: {} triangles, {:.1} cm3 = {:.1} g (voxel design {:.1} cm3; arms {:.1} cm3, of which {:.2} in no pillar)\n", tris.len(), v / 1000.0, v / 1000.0 * m.strengths().density_kg_m3.unwrap_or(1270.0) / 1000.0, count as f64 * cell_cm3, arms / 1000.0, lost / 1000.0);
         rep += &stress_pictures(&out, &pos, &tri, &g, &an)?;
         std::fs::write(format!("{out}/bars-report.txt"), &rep).map_err(|e| e.to_string())?;
@@ -1156,6 +1254,24 @@ mod tests {
     }
 
     #[test]
+    fn frame_plate_joins_every_bar_root_to_a_screw() {
+        let bar = Bar { pts: vec![[2.0, 30.0, 40.0], [100.0, 0.0, 0.0]], vol: 1.0, r: 3.0 };
+        let caps = plate_frame(&[bar], &[[0.0, 41.0], [0.0, -41.0]], [2.75, 5.2], 5.0, 12.0);
+        // spine, two screw pads, root pad, strip root -> top screw
+        assert_eq!(caps.len(), 5, "{caps:?}");
+        assert!(caps.contains(&([30.0, 40.0], [0.0, 41.0], 6.0)) && caps.contains(&([30.0, 40.0], [30.0, 40.0], 6.0)));
+        assert!(plate_frame(&[], &[[0.0, 1.0]], [2.75, 5.2], 5.0, 0.0).is_empty());
+        // as a mesh: only inside the plate, about the area of the pads and strips times its thickness
+        let g = Grid { origin: [0.0, -10.0, -10.0], h: 1.0, n: [10, 20, 20] };
+        let keep = vec![false; g.cells()];
+        let caps = plate_frame(&[], &[[0.0, 6.0], [0.0, -6.0]], [1.0, 2.0], 3.0, 4.0);
+        let tris = bar_mesh(&g, &keep, &[], 0.0, 0.25, &[[0.0, 6.0], [0.0, -6.0]], [1.0, 2.0], 3.0, 4.0);
+        assert!(tris.iter().flatten().all(|p| p[0] >= -1e-9 && p[0] <= 3.0 + 1e-9), "plate stays between x 0 and 3");
+        let area = 12.0 * 4.0 + 2.0 * std::f64::consts::PI * 36.0; // spine 12 x 4 + two pads of radius 6, less overlap
+        assert!(caps.len() == 3 && volume(&tris) < 3.0 * area && volume(&tris) > 0.5 * 3.0 * area, "{}", volume(&tris));
+    }
+
+    #[test]
     fn simple_points() {
         let mut nb = [false; 27];
         nb[13] = true;
@@ -1183,7 +1299,7 @@ mod tests {
         assert!(ends.iter().any(|x| *x < 2.0) && ends.iter().any(|x| *x > 18.0), "runs into plate and pad: {:?}", b.pts);
         assert!(b.pts.iter().all(|p| p[1].abs() < 1.01 && p[2].abs() < 1.01), "on the arm's axis: {:?}", b.pts);
         // the mesh holds the plate, the pad and the bar
-        let tris = bar_mesh(&g, &keep, &list, 0.0, 0.25, &[], [HOLE_R, SINK_R], 0.0);
+        let tris = bar_mesh(&g, &keep, &list, 0.0, 0.25, &[], [HOLE_R, SINK_R], 0.0, 0.0);
         let want = 2.0 * 2.0 * 6.0 * 6.0 + std::f64::consts::PI * b.r * b.r * 16.0;
         assert!((volume(&tris) - want).abs() < 0.05 * want, "{} against {want}", volume(&tris));
         let (pos, tri) = index(&tris);
