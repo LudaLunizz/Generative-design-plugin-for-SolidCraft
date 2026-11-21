@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 lib = json.loads((ROOT / "materials" / "library.json").read_text(encoding="utf-8"))
 one_of = [{"const": m["id"], "title": m["name"]} for m in lib["materials"]]
@@ -25,23 +25,19 @@ manifest = {
         "module": "plugin.wasm",
         "entries": [
             {"name": "apply-material", "effect": "edit",
-             "slots": [{"kind": "ribbon", "name": "Manage"}],
              "input_schema": {"type": "object", "required": ["material"], "properties": {
                  "material": {"type": "string", "title": "Material", "default": "aluminium-6061-t6", "oneOf": one_of,
                               "description": "Creates this material with its engineering card in the design (once) and assigns it"},
                  "body": body}}},
             {"name": "material-report", "effect": "read",
-             "slots": [{"kind": "ribbon", "name": "Inspect"}],
              "input_schema": {"type": "object", "properties": {"body": body, "safety_factor": sf}}},
             {"name": "materials", "effect": "read",
-             "slots": [{"kind": "ribbon", "name": "Manage"}],
              "input_schema": {"type": "object", "properties": {
                  "family": {"type": "string", "title": "Family", "default": "any", "oneOf": [
                      {"const": "any", "title": "All materials"}, {"const": "metal", "title": "Metals"},
                      {"const": "polymer", "title": "Plastics"}]},
                  "safety_factor": sf}}},
             {"name": "stress-check", "effect": "read",
-             "slots": [{"kind": "ribbon", "name": "Inspect"}],
              "input_schema": {"type": "object", "required": ["fixed", "load"], "properties": {
                  "fixed": {"type": "string", "title": "Fixed faces",
                            "description": "Where the part is held: a face name (F1:-x, F2:bore:side:0), its number, or a side (-x, +y ...); several with commas"},
@@ -60,7 +56,6 @@ manifest = {
                  "resolution": {"type": "integer", "title": "Cells along the longer side", "default": 240, "minimum": 10, "maximum": 400},
                  "picture": {"type": "boolean", "title": "Text heat map", "default": True}}}},
             {"name": "optimise-plate", "effect": "edit",
-             "slots": [{"kind": "ribbon", "name": "Manage"}],
              "input_schema": {"type": "object", "properties": {
                  "width_mm": {"type": "number", "title": "Width", "unit": "mm", "default": 200, "minimum": 1, "maximum": 10000,
                               "description": "Along X; the fixed edge is at X = 0"},
