@@ -23,6 +23,10 @@ Version 0.6.0 is tested with **SolidCraft 0.45.0** (`tests/cli-test.sh`, corner 
 > material values are listed below with their sources: they were checked against public data
 > sheets in 0.4.0, but not against the (paywalled) standards themselves.
 
+**User manual:** [docs/manual/Generative-Design-Engine-Manual.pdf](docs/manual/Generative-Design-Engine-Manual.pdf)
+(source: [HTML](docs/manual/Generative-Design-Engine-Manual.html)), for day-to-day use: install, every
+command and field, a worked example, the command-line tools, limits and troubleshooting.
+
 ## Entries
 
 | Entry | Effect | What it does |
