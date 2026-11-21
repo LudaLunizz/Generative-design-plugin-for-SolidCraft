@@ -48,7 +48,7 @@ ol, ul { margin: 3pt 0 6pt; padding-left: 16pt; }
 <ol>
 <li>Download <code>gen-design-engine-&lt;version&gt;.zip</code> and its <code>.sha256</code> from the latest GitHub release.</li>
 <li>Check the hash: <code>sha256sum gen-design-engine-*.zip</code> and compare it with the number in the <code>.sha256</code> file. (The v0.5.0 file once named the path <code>dist/...</code>; comparing by eye always works.)</li>
-<li>In SolidCraft: <b>Preferences › Plugins › Install plugin…</b> and pick the zip. Installing a newer version over an older one replaces it.</li>
+<li>In SolidCraft: <b>Preferences › Plugins › Install plugin…</b> (<b>File › Plugins…</b> opens the same page) and pick the zip. Installing a newer version over an older one replaces it.</li>
 <li><b>Restart SolidCraft.</b> A window that was already open keeps the old version until it restarts.</li>
 </ol>
 <p>The plugin asks for no folders, no network, no clock and no extra permissions. It stays inside SolidCraft's default limits, so SolidCraft asks for no extra approval.</p>
@@ -58,11 +58,17 @@ solidcraft-cli plugin check ~/.local/share/solidcraft/plugins/gen-design-engine<
 <p>On Linux the plugin folder is <code>~/.local/share/solidcraft/plugins/gen-design-engine</code> (also since SolidCraft 0.44, where the app ID changed).</p>
 
 <h2>3. Where to find it in SolidCraft</h2>
+<p>Checked in SolidCraft 0.45.0. The plugin's commands show up in three places:</p>
 <ul>
-<li><b>Model › Plugins</b> lists every command of the plugin.</li>
-<li>The ribbon has them in two groups: <b>Manage</b> (Apply material, Materials, Optimise plate) and <b>Inspect</b> (Material report, Stress check).</li>
-<li>Each command opens a form. Every field has a default and a short help text; hover over it.</li>
+<li><b>Model tab › Plugins group</b> (right end of the ribbon): one button per command, all six. SolidCraft labels these buttons with the ribbon tab each command asks for, so five of them read <b>Manage</b> or <b>Inspect</b> and the sixth <b>solver-…</b>. From left to right: Manage = apply-material, Inspect = material-report, Manage = materials, Inspect = stress-check, Manage = optimise-plate, then solver-benchmark. Hover over a button to see its name ("Generative Design Engine · stress-check"). Clicking the word <b>Plugins</b> under the group opens the Plugins menu with every command listed by name.</li>
+<li><b>Manage tab</b>: a group named <b>Generative Design Engine</b> with apply-material, materials and optimise-plate.</li>
+<li><b>Inspect tab</b>: a group named <b>Generative Design Engine</b> with material-report and stress-check.</li>
+</ul>
+<p>The buttons carry the command names as written in this manual (<code>apply-material</code>, <code>stress-check</code> …), not the friendly names of section 1. Solver benchmark is only on the Model tab.</p>
+<ul>
+<li>Each command opens a form drawn from the plugin's field list. Most fields have a default; some have a short help text (hover over it). Fixed faces and Load faces in the stress check have no default and must be filled in.</li>
 <li>Body fields are plain text: type the body name as the browser shows it. Empty means every body (or, for the stress check, the only body).</li>
+<li>Opening a form runs nothing; only <b>Run</b> does.</li>
 </ul>
 
 <h2>4. Materials: list, apply, report</h2>
