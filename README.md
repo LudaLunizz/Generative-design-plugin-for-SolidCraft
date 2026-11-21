@@ -14,8 +14,8 @@ for flat parts, and a **plate optimiser** that designs a lightweight plate and d
 and an extrude. Next to the plugin there are four command-line tools (3D stress check,
 printed-part stress check, plate refine pass, beam optimiser; see below).
 
-Version 0.6.0 is tested with **SolidCraft 0.45.0** (`tests/cli-test.sh`, corner rounding, the
-`plate_refine` build script, and `solidcraft-cli plugin check`: no problems) and with 0.44.1;
+Version 0.6.1 is tested with **SolidCraft 0.45.0** (`tests/cli-test.sh` and `solidcraft-cli plugin
+check`: no problems); 0.6.0 also with corner rounding and the `plate_refine` build script, and with 0.44.1;
 0.3.x also ran on 0.43.0.
 
 > **A design aid, not a certified analysis.** The numbers can be wrong. A qualified person must
@@ -38,8 +38,9 @@ command and field, a worked example, the command-line tools, limits and troubles
 | `gen-design-engine.materials` | read | Lists the library with its values. Runs no app commands. |
 | `gen-design-engine.solver-benchmark` | read | Runs the 2D SIMP optimiser on a test case and reports the work done (development tool). |
 
-In SolidCraft: **Model › Plugins** lists them (and, where the version supports placement,
-Manage and Inspect ribbon groups). Every entry's form uses only fields SolidCraft's dialog can
+In SolidCraft: the **Plugins** group on the **Model** tab has a button per entry, labelled with
+the entry name (the entries declare no ribbon slots: SolidCraft labels that group's buttons with the
+slot name, which made them read "Manage" and "Inspect" up to 0.6.0). Every entry's form uses only fields SolidCraft's dialog can
 draw (a test checks this). From MCP or a script: `plugin.run` with the entry name.
 
 ### Stress check
