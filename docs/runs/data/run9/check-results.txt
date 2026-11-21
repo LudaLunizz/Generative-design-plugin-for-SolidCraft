@@ -1,0 +1,8 @@
+run9 (20 Nov 2026): refine list item 3, tapered bars, on top of run8's settings (two-way sizing, frame plate held
+at the screws). Every point along a bar is sized on its own (thick where the stress is high), smoothed.
+  eso3d from=run5 out=run9 bars=1 size=1 taper=1 plate=frame rounds=9 holes=-6.5:41,-6.5:-41 hole=5.5 sink=10.4
+Result: 45.1 cm3 (~57 g PETG; run8 45.6 cm3 / 58 g). down SF 4.1, tip 7.77 mm; side SF 5.7, tip 3.52 mm;
+plate SF 4.1, strips 27.1 mm. Closed mesh. Kept round 5 of 9 (the lightest that passes).
+FINDING: tapering gains about 1 % here: 11 of 13 bars already sit at the 5 mm minimum (min_member) all along, so
+there is nothing to taper; only bar 2 (6.8 -> 5.0 mm) and bar 7 (5.0 -> 6.4 mm) taper. The tip moves more than run8.
+RUN8 STAYS THE BETTER ONE. Tapering will matter with heavier loads or a smaller minimum bar.

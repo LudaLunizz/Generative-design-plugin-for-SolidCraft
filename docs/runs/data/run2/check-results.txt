@@ -1,0 +1,5 @@
+Stress check on a finer grid (1.25 mm voxels, PETG, 50 N down + 15 N sideways, eso3d check=FILE.stl)
+bracket.stl (voxel design):          down SF 6.9 (6.8 MPa, tip 0.71 mm), side SF 4.9 (9.6 MPa, tip 1.7 mm)  PASS
+bracket-smooth (blur 2):             down 1069 MPa, tip moves 843 mm; side SF 0.3   FAIL (load path nearly broken)
+blur1/bracket-smooth (blur 1):       down 143 MPa, tip moves 262 mm; side SF 1.9    FAIL
+Cause: the 1-voxel diagonal members near the tip (cross brace) fade out in the blur; the upper arm stops about 9 mm before the tip pad.

@@ -1,0 +1,4 @@
+run3: eso3d with min_member=5 mm (2 voxels of 2.5 mm; opening after every round). Stopped at SF 4 on the 2.5 mm grid, 72.9 cm3.
+Stress check on bracket-smooth.stl, 1.25 mm voxels, PETG, 50 N down + 15 N sideways (eso3d check=...):
+  down: peak 8.55 MPa, SF 5.5, tip moves 1.3 mm   side: peak 5.90 MPa, SF 8.0, tip moves 3.8 mm   PASS (needed SF 4)
+  smooth volume 72.8 cm3 = voxel volume 72.9 cm3, 92.5 g PETG; closed single shell, bbox 150 x 80 x 100 mm.

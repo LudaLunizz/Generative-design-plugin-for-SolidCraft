@@ -1,0 +1,11 @@
+run5 (20 Nov 2026): run3's design with holes for 5 mm countersunk wood screws in fischer SX Plus 6 x 30 plugs
+(concrete wall). PRINT THIS ONE (run4 = 4 mm screw version).
+  eso3d from=run5 out=run5 holes=-6.5:41,-6.5:-41 hole=5.5 sink=10.4
+Holes: 5.5 mm, countersink 10.4 mm at 90 deg (5 mm screw + the same clearance as the user's 4.5 / 8.4 standard;
+head size 10 mm assumed: check your screws). Measured on the STL: 5.50 mm, countersink 10.51 mm at the face.
+SolidCraft 0.45: one closed body, bbox 150 x 80 x 100, 72.52 cm3 (~92 g PETG).
+Stress check (1.25 mm voxels, PETG, 50 N down + 15 N side): down SF 5.5, tip 1.3 mm; side SF 8.0, tip 3.8 mm. PASS.
+Screws (screws.txt): top 106 N pull (~115 N worst, side load reversed) + 26 N shear; bottom 32 N.
+Plug: fischer SX Plus 6 x 30 in concrete >= C20/25 recommended 0.65 kN (safety factors included, tension/shear/
+combined, 5 mm wood screw, edge distance >= 35 mm) -> top screw at ~18 %. Screw head in PETG: SF 27 / 42.
+Screws: 5 mm countersunk wood screws, length >= plate 5 mm + plug 30 mm (+ a few mm), e.g. 5 x 40.

@@ -1,0 +1,13 @@
+run8 (20 Nov 2026): refine list items 1 + 2. Two-way bar sizing (as run7) AND a slim wall plate: instead of the
+full 80 x 100 x 5 plate, a frame 5 mm thick: pads round both screws and every bar root, strips from each bar root
+to its nearest screw and from screw to screw; the strip width is sized too (ended at 21.6 mm).
+Held ONLY at the screws (the material each screw clamps), with no wall pushing back: on the safe side.
+  eso3d from=run5 out=run8 bars=1 size=1 plate=frame rounds=10 holes=-6.5:41,-6.5:-41 hole=5.5 sink=10.4
+Result: 45.6 cm3 (~58 g PETG; run6 94 g, run7 74 g). Stress check 1.25 mm voxels, PETG, 50 N down + 15 N side:
+  down SF 4.1, tip 5.97 mm; side SF 6.8, tip 3.27 mm; plate SF 4.4; all bars >= SF 4. 4 rounds.
+For comparison, run6 (full plate) held only at the screws: down SF 4.7, tip 4.33 mm; side SF 9.3, tip 2.44 mm;
+plate SF 4.8 (run6/screw-hold-check). The tip movement here is large because the wall does not push back in this
+model; the real part moves less. There is no stiffness limit in the sizing yet.
+Highest plate stress: next to the screw pads (partly the edge of the clamped zone, which the model makes too sharp).
+screws.txt of run5 does not apply to this plate shape (it assumed the full plate tipping on its bottom edge).
+Wall-Bracket-run8.sc: SolidCraft 0.45 design with bars.stl as one closed mesh body (45.58 cm3, bbox 150 x 76.6 x 111.8). Saved 20 Nov.
