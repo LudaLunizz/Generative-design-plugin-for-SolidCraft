@@ -337,6 +337,8 @@ pub struct CaseResult {
     /// Contact nodes the surface pushes on at the end, and the solves it took to settle (1 = no contact).
     pub contact_nodes: usize,
     pub contact_rounds: usize,
+    /// Per cell: left out of the "away" peak (near the load, the supports and where the wall pushes).
+    pub near: Vec<bool>,
 }
 
 pub struct Analysis {
@@ -448,37 +450,39 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
     }
 
     // Cells near the load and support points: those touching them, grown by `exclude_layers`.
-    let mut near = vec![false; grid.cells()];
+    // cells touching the `touch` nodes, grown by `exclude_layers`
+    let grow = |touch: &[bool]| {
+        let mut near: Vec<bool> = (0..grid.cells()).map(|c| grid.cell_nodes(c).iter().any(|n| touch.get(*n).copied().unwrap_or(false))).collect();
+        for _ in 0..s.exclude_layers {
+            let before = near.clone();
+            for (c, slot) in near.iter_mut().enumerate() {
+                if *slot {
+                    continue;
+                }
+                let [i, j, k] = grid.cell_ijk(c);
+                let mut hit = false;
+                for di in -1i64..=1 {
+                    for dj in -1i64..=1 {
+                        for dk in -1i64..=1 {
+                            let (a, b, d) = (i as i64 + di, j as i64 + dj, k as i64 + dk);
+                            if a >= 0 && b >= 0 && d >= 0 && (a as usize) < grid.n[0] && (b as usize) < grid.n[1] && (d as usize) < grid.n[2] {
+                                hit |= before.get(grid.cell_index(a as usize, b as usize, d as usize)).copied().unwrap_or(false);
+                            }
+                        }
+                    }
+                }
+                *slot = hit;
+            }
+        }
+        near
+    };
     let mut touch = vec![false; grid.nodes()];
     for n in load_nodes.iter().chain(&fixed_nodes) {
         if let Some(t) = touch.get_mut(*n) {
             *t = true;
         }
     }
-    for (c, slot) in near.iter_mut().enumerate() {
-        *slot = grid.cell_nodes(c).iter().any(|n| touch.get(*n).copied().unwrap_or(false));
-    }
-    for _ in 0..s.exclude_layers {
-        let before = near.clone();
-        for (c, slot) in near.iter_mut().enumerate() {
-            if *slot {
-                continue;
-            }
-            let [i, j, k] = grid.cell_ijk(c);
-            let mut hit = false;
-            for di in -1i64..=1 {
-                for dj in -1i64..=1 {
-                    for dk in -1i64..=1 {
-                        let (a, b, d) = (i as i64 + di, j as i64 + dj, k as i64 + dk);
-                        if a >= 0 && b >= 0 && d >= 0 && (a as usize) < grid.n[0] && (b as usize) < grid.n[1] && (d as usize) < grid.n[2] {
-                            hit |= before.get(grid.cell_index(a as usize, b as usize, d as usize)).copied().unwrap_or(false);
-                        }
-                    }
-                }
-            }
-            *slot = hit;
-        }
-    }
+    let near = grow(&touch);
 
     let ndof = 3 * grid.nodes();
     let mut fixed = vec![false; ndof];
@@ -619,9 +623,15 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
         // Start with the surface pushing on every contact node; drop the ones it would have to pull, add back
         // the ones that would sink into it, until no node changes.
         let mut pressed = vec![true; contact_dofs.len()];
+        // a node at the edge of the pressed area can flip back and forth; after two switches it stays pressed
+        // (it carries next to nothing either way)
+        let mut switches = vec![0u8; contact_dofs.len()];
         let (mut it, mut ok, mut rounds) = (0, true, 0);
         let fnorm = f.iter().map(|v| v * v).sum::<f64>().sqrt();
+        // settle on loose solves (each warm-starts the next), then one solve at the full tolerance
+        let mut settled = contact_dofs.is_empty();
         loop {
+            let tol = if settled { s.cg_tol } else { s.cg_tol.max(1e-5) };
             rounds += 1;
             let mut held = base_fixed.clone();
             for (d, p) in contact_dofs.iter().zip(&pressed) {
@@ -645,35 +655,54 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
                     }
                 }
             };
-            let (i, o) = pcg(&apply, &precondition, &f, &mut u, s.cg_tol, s.cg_max);
+            let (i, o) = pcg(&apply, &precondition, &f, &mut u, tol, s.cg_max);
             it += i;
             ok &= o;
-            if contact_dofs.is_empty() {
+            if settled {
                 break;
             }
             let mut ku = vec![0.0; ndof];
             apply_with(&[], &u, &mut ku);
             let umax = u.iter().fold(0.0f64, |m, v| m.max(v.abs()));
             let mut changed = 0;
-            for (d, p) in contact_dofs.iter().zip(pressed.iter_mut()) {
+            for ((d, p), n) in contact_dofs.iter().zip(pressed.iter_mut()).zip(switches.iter_mut()) {
+                if *n >= 2 {
+                    continue;
+                }
                 let reaction = push * (ku.get(*d).copied().unwrap_or(0.0) - f.get(*d).copied().unwrap_or(0.0));
                 let sink = push * u.get(*d).copied().unwrap_or(0.0);
-                let now = if *p { reaction >= -1e-9 * fnorm } else { sink < -1e-9 * umax };
+                let now = if *p { reaction >= -10.0 * tol * fnorm } else { sink < -10.0 * tol * umax };
                 if now != *p {
                     *p = now;
+                    *n += 1;
                     changed += 1;
                 }
             }
-            if changed == 0 {
-                break;
-            }
-            if rounds >= 30 {
-                warnings.push(format!("{}: the wall contact did not settle in 30 solves ({changed} nodes still switching)", case.name));
-                break;
+            if changed == 0 || rounds >= 30 {
+                if changed > 0 {
+                    warnings.push(format!("{}: the wall contact did not settle in 30 solves ({changed} nodes still switching)", case.name));
+                }
+                settled = true;
+                if tol <= s.cg_tol {
+                    break;
+                }
+                continue;
             }
             progress(&format!("{}: wall contact, {changed} nodes switched", case.name));
         }
         let contact_nodes = pressed.iter().filter(|p| **p).count();
+        // where the rigid wall pushes is a support too: its edge peaks are left out of "away" as well
+        let near_case = if contact_nodes > 0 {
+            let mut t = touch.clone();
+            for (d, p) in contact_dofs.iter().zip(&pressed) {
+                if *p && let Some(slot) = t.get_mut(d / 3) {
+                    *slot = true;
+                }
+            }
+            grow(&t)
+        } else {
+            near.clone()
+        };
         // Stresses at cell centres.
         let b0 = strain_matrix(0.0, 0.0, 0.0, grid.h);
         let lam = s.e_mpa * s.nu / ((1.0 + s.nu) * (1.0 - 2.0 * s.nu));
@@ -706,7 +735,7 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
         let (mut max_away, mut away_c) = (0.0, 0);
         for c in &cells {
             let v = vm.get(*c).copied().unwrap_or(0.0);
-            if v > max_away && !near.get(*c).copied().unwrap_or(true) {
+            if v > max_away && !near_case.get(*c).copied().unwrap_or(true) {
                 max_away = v;
                 away_c = *c;
             }
@@ -742,6 +771,7 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             converged: ok,
             contact_nodes,
             contact_rounds: rounds,
+            near: near_case,
         });
     }
     Ok(Analysis { cells_material: cells.len(), cells_dropped: dropped, fixed_nodes: fixed_nodes.len(), load_nodes: load_nodes.len(), cases: results, warnings })
@@ -1002,6 +1032,8 @@ mod tests {
         let face = 11 * 21; // wall-face nodes
         assert!(wall.contact_nodes > 10 && wall.contact_nodes < face / 2, "bottom part only: {}", wall.contact_nodes);
         assert!(wall.contact_rounds > 1);
+        let count = |r: &CaseResult| r.near.iter().filter(|n| **n).count();
+        assert!(count(&wall) > count(&free), "where the wall pushes is left out of the away peak");
         assert!(stuck.max_disp < wall.max_disp && wall.max_disp < 0.8 * free.max_disp, "{} {} {}", stuck.max_disp, wall.max_disp, free.max_disp);
         let pull = [20.0, 0.0, 0.0];
         let (free, wall) = (run(&screw(0.0), false, pull), run(&screw(0.0), true, pull));

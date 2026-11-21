@@ -1026,7 +1026,7 @@ fn run() -> Result<(), String> {
     let analyse_mesh = |pos: &[[f64; 3]], tri: &[[u32; 3]], fixed: &Region, wall: bool| -> Result<(Grid, Vec<bool>, Analysis), String> {
         let (g, sol) = voxelize(pos, tri, cv)?;
         let setup = Setup { grid: &g, solid: &sol, e_mpa: e_gpa * 1000.0, nu, fixed, load: &Region::Side { axis: 0, max: true, depth: 0.5 * cv }, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true, contact: wall.then_some(Contact { region: &wall_face, axis: 0, push: 1.0 }) };
-        let an = analyse(&setup, &cases, |_| {})?;
+        let an = analyse(&setup, &cases, |m| if m.contains("wall contact") { eprintln!("  {m}") })?;
         Ok((g, sol, an))
     };
     if let Some(file) = o.get("check") {
@@ -1218,6 +1218,14 @@ fn run() -> Result<(), String> {
                 let p = g.cell_centre(c);
                 let worst = an.cases.iter().map(|k| k.vm[c]).filter(|v| v.is_finite()).fold(0.0, f64::max);
                 if p[0] < xb {
+                    // with wall contact, the cells where the wall pushes (and its edge) are held as well, per case
+                    if hold == "contact" {
+                        let free = an.cases.iter().filter(|k| !k.near[c]).map(|k| k.vm[c]).filter(|v| v.is_finite()).fold(0.0, f64::max);
+                        if !holes.iter().any(|[y, z]| (p[1] - y).hypot(p[2] - z) < sr + 1.5 + 2.0 * cv) {
+                            plate_peak = plate_peak.max(free);
+                        }
+                        continue;
+                    }
                     let held = if hold == "wall" { p[0] < 2.0 * cv } else { holes.iter().any(|[y, z]| (p[1] - y).hypot(p[2] - z) < sr + 1.5 + 2.0 * cv) };
                     if !held {
                         plate_peak = plate_peak.max(worst);
