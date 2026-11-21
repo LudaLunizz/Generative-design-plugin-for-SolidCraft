@@ -1,0 +1,253 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Generative Design Engine: user manual</title>
+<style>/* dark-pdf */ html { color: #f2f2f2; }
+@page { background: #000; size: A4; margin: 15mm 15mm; }
+body { font-family: "Ubuntu", "DejaVu Sans", sans-serif; font-size: 10pt; color: #f1f1f2; line-height: 1.4; }
+h1 { font-size: 19pt; margin: 0 0 2pt; color: #e95420; }
+.sub { color: #d1d1d1; margin-bottom: 12pt; }
+h2 { font-size: 12.5pt; color: #e95420; border-bottom: 1.5px solid #e95420; padding-bottom: 2pt; margin-top: 14pt; break-after: avoid; }
+h3 { font-size: 10.5pt; margin: 10pt 0 2pt; break-after: avoid; }
+code { font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace; background: #232323; padding: 0 3px; border-radius: 3px; font-size: 9.5pt; }
+pre { font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace; background: #202020; border-left: 3px solid #e95420; padding: 5pt 8pt; font-size: 9pt; white-space: pre-wrap; margin: 4pt 0 7pt; break-inside: avoid; }
+.box { background: #371100; border: 1px solid #963c16; border-radius: 4px; padding: 8pt 10pt; }
+table { border-collapse: collapse; width: 100%; margin: 4pt 0; }
+td, th { border: 1px solid #424242; padding: 3.5pt 6pt; vertical-align: top; text-align: left; }
+th { background: #202020; }
+tr { break-inside: avoid; }
+li { margin-bottom: 2pt; }
+p { margin: 5pt 0; }
+ol, ul { margin: 3pt 0 6pt; padding-left: 16pt; }
+</style></head><body>
+<h1>Generative Design Engine: user manual</h1>
+<div class="sub">SolidCraft plugin, version 0.6.0 (tested on SolidCraft 0.45.0). Written 21 Nov 2026. This manual covers day-to-day use. The README in the repository has the measurements, the sources and the reasons behind the design.<br>Repository: github.com/LudaLunizz/Generative-design-plugin-for-SolidCraft</div>
+
+<div class="box"><b>In short:</b> the plugin adds six commands to SolidCraft. With them you put real engineering materials on your bodies, read mass and strength per body, check how much stress a flat part gets under a load, and let the computer design a light plate for you. Next to the plugin there are five command-line tools that do the heavy work (3D parts, finer plates, beams) outside SolidCraft's time limits.</div>
+
+<p><b>Two things to know first</b></p>
+<ul>
+<li><b>Third-party plugin.</b> It is made by LudaLunizz, not by Tangency Labs or the SolidCraft team, and has no official connection to them. Questions and bugs go to this plugin's repository.</li>
+<li><b>A design aid, not a certified analysis.</b> The numbers can be wrong. A qualified person must check them before anyone relies on them for a design, manufacturing or safety decision.</li>
+</ul>
+
+<p><b>Contents</b></p>
+<ol><li>What it does</li><li>Install, update, check</li><li>Where to find it in SolidCraft</li><li>Materials: list, apply, report</li><li>Stress check</li><li>Plate optimiser</li><li>A full example: from plate to checked part</li><li>Using it from Claude, MCP or a script</li><li>Command-line tools</li><li>Material library</li><li>Limits</li><li>Troubleshooting</li><li>Files and folders</li></ol>
+
+<h2>1. What it does</h2>
+<table>
+<tr><th>Command</th><th>Kind</th><th>What you get</th></tr>
+<tr><td><b>Materials</b> (<code>materials</code>)</td><td>read</td><td>The library: every material with stiffness, density and strength, and the allowable stress at your safety factor.</td></tr>
+<tr><td><b>Apply material</b> (<code>apply-material</code>)</td><td>edit</td><td>Puts a library material with its full engineering card in the design and assigns it to one body or to all. One undo step.</td></tr>
+<tr><td><b>Material report</b> (<code>material-report</code>)</td><td>read</td><td>Per body: material, volume, mass, stiffness, yield and tensile strength, allowable stress.</td></tr>
+<tr><td><b>Stress check</b> (<code>stress-check</code>)</td><td>read</td><td>For a flat part: where it is held, where the force pushes, how hard. Gives peak stress and where, safety factor (pass/fail), largest displacement, a text heat map.</td></tr>
+<tr><td><b>Optimise plate</b> (<code>optimise-plate</code>)</td><td>edit</td><td>Designs a light, stiff plate (a cantilever or a beam) with a material share you choose, then draws it as a sketch and extrudes it into a new body with the material on it. One undo step.</td></tr>
+<tr><td><b>Solver benchmark</b> (<code>solver-benchmark</code>)</td><td>read</td><td>A development tool: runs the optimiser on a test case and reports the work done. You do not need it for design work.</td></tr>
+</table>
+<p>"Read" commands never change the design. "Edit" commands change it as one step, so one <b>Undo</b> removes all of it (sketch, body and material together).</p>
+
+<h2>2. Install, update, check</h2>
+<h3>Install or update</h3>
+<ol>
+<li>Download <code>gen-design-engine-&lt;version&gt;.zip</code> and its <code>.sha256</code> from the latest GitHub release.</li>
+<li>Check the hash: <code>sha256sum gen-design-engine-*.zip</code> and compare it with the number in the <code>.sha256</code> file. (The v0.5.0 file once named the path <code>dist/...</code>; comparing by eye always works.)</li>
+<li>In SolidCraft: <b>Preferences › Plugins › Install plugin…</b> and pick the zip. Installing a newer version over an older one replaces it.</li>
+<li><b>Restart SolidCraft.</b> A window that was already open keeps the old version until it restarts.</li>
+</ol>
+<p>The plugin asks for no folders, no network, no clock and no extra permissions. It stays inside SolidCraft's default limits, so SolidCraft asks for no extra approval.</p>
+<h3>Check what is installed</h3>
+<pre>jq -r .version ~/.local/share/solidcraft/plugins/gen-design-engine/plugin.json
+solidcraft-cli plugin check ~/.local/share/solidcraft/plugins/gen-design-engine</pre>
+<p>On Linux the plugin folder is <code>~/.local/share/solidcraft/plugins/gen-design-engine</code> (also since SolidCraft 0.44, where the app ID changed).</p>
+
+<h2>3. Where to find it in SolidCraft</h2>
+<ul>
+<li><b>Model › Plugins</b> lists every command of the plugin.</li>
+<li>The ribbon has them in two groups: <b>Manage</b> (Apply material, Materials, Optimise plate) and <b>Inspect</b> (Material report, Stress check).</li>
+<li>Each command opens a form. Every field has a default and a short help text; hover over it.</li>
+<li>Body fields are plain text: type the body name as the browser shows it. Empty means every body (or, for the stress check, the only body).</li>
+</ul>
+
+<h2>4. Materials: list, apply, report</h2>
+<h3>Materials</h3>
+<p>Pick a family (all, metals, plastics) and a safety factor. You get the table of section 10 with the allowable stress worked out. It runs no app commands, so it is safe at any time.</p>
+<h3>Apply material</h3>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td>Material</td><td>One of the 14 library materials.</td></tr>
+<tr><td>Body</td><td>One body name, or empty for every body.</td></tr>
+</table>
+<p>The material is created in the design once, with every value naming its source. SolidCraft marks those values "source review required": that is normal. If your design already has a material with the same name but <b>other</b> values, the plugin refuses instead of overwriting it, and says so. Rename your own material or pick another.</p>
+<h3>Material report</h3>
+<p>Pick a body (or empty for all) and a safety factor (1 to 10, default 2). For each body you get material, volume, mass, stiffness and strengths, and the <b>allowable stress</b> = yield strength ÷ safety factor (for printed plastics, which have no yield value: tensile strength ÷ safety factor).</p>
+<p><b>The report is not a stress analysis.</b> It says how much stress the material may take, not how much your part gets. For that, use the stress check.</p>
+<p>If a body's material has a library name but another density, the report leaves out the strengths (it cannot be sure they belong to that material).</p>
+
+<h2>5. Stress check</h2>
+<p>For a <b>flat part of one thickness</b> (a plate, a bracket cut from sheet, a printed flat part). It cuts the part into a grid of small cells, holds it where you say, pushes where you say, and works out the stress in every cell.</p>
+<h3>The form</h3>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td>Fixed faces</td><td>Where the part is held. See "naming faces" below. Several with commas.</td></tr>
+<tr><td>Load faces</td><td>Where the force acts. The force is spread evenly over them.</td></tr>
+<tr><td>Force X / Y / Z</td><td>The force in newtons (default 100 N down along −Y). 1 kg weighs about 9.81 N.</td></tr>
+<tr><td>Body</td><td>The body to check; empty when the design has only one.</td></tr>
+<tr><td>Material</td><td>"The body's own material" (default) or any library material, to try another without changing the body.</td></tr>
+<tr><td>Safety factor needed</td><td>The check passes when the real safety factor is at least this (default 2).</td></tr>
+<tr><td>Plate plane</td><td>Automatic: the plane across the thinnest direction. Or choose XY, XZ, YZ.</td></tr>
+<tr><td>Cells along the longer side</td><td>10 to 400, default 240. More is finer and slower.</td></tr>
+<tr><td>Text heat map</td><td>A picture of the stress made of characters, in the reply.</td></tr>
+</table>
+<h3>Naming faces</h3>
+<ul>
+<li>A <b>side</b> of the part: <code>-x</code>, <code>+x</code>, <code>-y</code>, <code>+y</code>, <code>-z</code>, <code>+z</code>. Easiest for a plain plate: <code>-x</code> is the left end.</li>
+<li>A <b>face name</b> as SolidCraft's <code>model.faces</code> lists it, for example <code>F1:-x</code> or <code>F2:bore:side:0</code> (the inside of a hole).</li>
+<li>A <b>face number</b>.</li>
+<li>Supports can be <b>holes</b> (the cylinder face through the thickness, i.e. a bolt) or flat side faces.</li>
+</ul>
+<h3>Reading the result</h3>
+<ul>
+<li><b>Peak von Mises stress</b> (MPa) and where it is. Von Mises is the usual "how hard is the material working" number for metals and plastics.</li>
+<li><b>Safety factor</b> = strength ÷ peak stress, and <b>pass/fail</b> against the factor you asked for.</li>
+<li><b>Largest displacement</b> (mm): how far the part bends.</li>
+<li><b>99th percentile stress</b>: sharp inside corners give a peak that keeps rising with finer grids. If the plugin warns about that, judge by the 99th percentile or round the corner in the model.</li>
+<li><b>Warnings</b>: read them. The part of the force that points through the plate is ignored (bending out of the plate is not covered), and a part that is thick or changes through its thickness gets a warning.</li>
+</ul>
+<p>Checked against beam theory: a 100 × 10 × 5 mm aluminium cantilever under 100 N gives 1.170 mm tip deflection (theory 1.17) and 121 MPa peak (theory 120).</p>
+
+<h2>6. Plate optimiser</h2>
+<p>You give a rectangle, a material, a load and how much of the rectangle may be material. The plugin removes what is not needed for stiffness and draws what is left as smooth outlines, then extrudes it into a new body.</p>
+<h3>The form</h3>
+<table>
+<tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+<tr><td>Width</td><td>200 mm</td><td>Along X. The fixed edge is at X = 0.</td></tr>
+<tr><td>Height</td><td>100 mm</td><td>Along Y. Rounded to whole grid cells; the reply gives the height actually used.</td></tr>
+<tr><td>Thickness</td><td>10 mm</td><td>Extrude depth.</td></tr>
+<tr><td>Material</td><td>6061-T6</td><td>Library material put on the new body.</td></tr>
+<tr><td>Load case</td><td>cantilever</td><td><b>Cantilever</b>: left edge fixed, load at the right middle (a shelf bracket). <b>MBB half beam</b>: half of a beam on two supports, load at the top left (the other half is its mirror).</td></tr>
+<tr><td>Force</td><td>500 N</td><td>Only used for the deflection estimate. The shape does not depend on it.</td></tr>
+<tr><td>Material share</td><td>0.4</td><td>0.1 to 0.9: how much of the rectangle stays. Lower = lighter but bendier.</td></tr>
+<tr><td>Cells across the width</td><td>80</td><td>20 to 240. More = finer detail, longer run. Rounded to a multiple of 4.</td></tr>
+<tr><td>Design iterations</td><td>60</td><td>10 to 150. More = a cleaner design.</td></tr>
+<tr><td>Smallest member</td><td>2 cells</td><td>1 to 4. Larger gives fewer, thicker members.</td></tr>
+<tr><td>Corner rounding</td><td>0 mm</td><td>Fillet radius where members meet. Only adds material (a few per cent), never thins a member. Holes narrower than the fillet close.</td></tr>
+<tr><td>Body name</td><td>Optimised plate</td><td>Must not exist yet in the design.</td></tr>
+</table>
+<h3>Size limits (SolidCraft gives a plugin 30 s)</h3>
+<ul>
+<li>The whole grid is at most 30,000 cells, and cells × iterations at most 2.4 million.</li>
+<li>Examples that fit: 160 × 80 cells with 150 iterations (about 3 s); 240 × 120 cells with about 80 iterations (about 5 s).</li>
+<li>A plate that is too thin (under 4 cells high) or too tall and narrow is refused with a message saying what to change.</li>
+<li>For finer or rounder plates, use the <b>refine pass</b> <code>plate_refine</code> (section 9). The reply points to it.</li>
+</ul>
+<h3>What you get</h3>
+<p>A sketch of closed smooth outlines (splines; the plate's own edges stay straight), an extrude, and the material on the body. The reply gives mass, number of outlines and holes, and a rough deflection at the load point.</p>
+<div class="box"><b>Stiffness only.</b> The optimiser does not check strength, stress concentrations, buckling or whether it can be made. Always run the <b>stress check</b> on the new body afterwards.</div>
+
+<h2>7. A full example: from plate to checked part</h2>
+<ol>
+<li><b>Optimise plate</b>: width 200, height 100, thickness 10, material <code>petg-printed</code>, cantilever, force 50 N, share 0.4, cells 160, iterations 150, rounding 3 mm, name <code>Bracket</code>.</li>
+<li>Look at it. Too spindly? Undo once and raise the share or the smallest member.</li>
+<li><b>Stress check</b>: body <code>Bracket</code>, fixed faces <code>-x</code>, load faces <code>+x</code>, force Y −50, safety factor 2.</li>
+<li>Fails? Raise the share, the thickness or the rounding (sharp corners carry the peaks) and run both again.</li>
+<li><b>Material report</b>: mass for the slicer or the order.</li>
+<li>Save the design (<code>.sc</code>) and export the STL for printing.</li>
+</ol>
+
+<h2>8. Using it from Claude, MCP or a script</h2>
+<p>Since SolidCraft 0.45 the installed plugin's commands are also <b>MCP tools</b>. Claude sees them as <code>gen-design-engine_materials</code>, <code>_apply-material</code>, <code>_material-report</code>, <code>_stress-check</code>, <code>_optimise-plate</code>, <code>_solver-benchmark</code> on the <code>solidcraft</code> server. You can just ask: "put PETG on the bracket and stress-check it with 50 N down at +x".</p>
+<p>In a script or <code>batch</code>, the command is <code>plugin.run</code>:</p>
+<pre>{"command": "plugin.run",
+ "params": {"path": "gen-design-engine", "entry": "stress-check",
+            "params": {"fixed": "-x", "load": "+x", "force_y": -50, "body": "Bracket"}}}</pre>
+<p>The reply is wrapped as <code>{"result": ...}</code>. Scripts may pass <code>"bodies": ["A", "B"]</code> instead of <code>"body"</code> (not both). A headless run (<code>solidcraft-cli run</code>) first needs <code>plugin.inspect</code> for the approval hash; <code>tests/cli-test.sh</code> shows how.</p>
+
+<h2>9. Command-line tools</h2>
+<p>These run outside SolidCraft, natively, with no time or memory limit. They are <b>experimental</b>. Build them once in the repository folder:</p>
+<pre>cd Generative-design-plugin-for-SolidCraft
+cargo build --release --features gpu --bins     # without --features gpu: CPU only</pre>
+<p>The programs land in <code>target/release/</code>. Each file in <code>src/bin/</code> starts with its full usage. Long runs can be kept to some of the cores with <code>taskset</code> (for example <code>taskset -c 0-9</code>).</p>
+<table>
+<tr><th>Tool</th><th>Use it for</th></tr>
+<tr><td><code>plate_refine</code></td><td>The plate optimiser, finer (up to 800 cells) and rounder, on the GPU. Writes a script that builds the body in SolidCraft.</td></tr>
+<tr><td><code>stress3d</code></td><td>3D stress check of any STL part against a library material. Heat-map PNGs + <code>report.json</code>.</td></tr>
+<tr><td><code>stress3d_printed</code></td><td>The same for a 3D-printed part: walls and skins around a lighter infill, layers along Z.</td></tr>
+<tr><td><code>eso3d</code></td><td>"Start with a pyramid and take out what is not needed": a wall bracket grown from a solid frustum, with optional countersunk screw holes. <code>check=FILE.stl</code> checks any STL with the same loads.</td></tr>
+<tr><td><code>beam_opt</code></td><td>Lightest plate-truss for a long cantilever beam, with buckling checks.</td></tr>
+</table>
+<h3>plate_refine</h3>
+<pre>target/release/plate_refine width=200 height=100 thickness=10 material=petg-printed \
+  share=0.4 cells=480 min_member=3 round=4 name="Refined plate" --out refine.json
+solidcraft-cli run refine.json        # or ask Claude: MCP batch {"path": ...}</pre>
+<p>It stops by itself when the design has settled (limit 3,000 iterations; a 480 × 240 run took about 3 minutes). <code>min_member</code> and <code>round</code> are in mm. The GPU is capped at 80 % busy, desktop included (<code>gpu_max</code>, default 80; do not raise it). Without a suitable GPU it uses the CPU.</p>
+<h3>stress3d</h3>
+<pre>target/release/stress3d part.stl --material aluminium-6061-t6 \
+  --fix zmin --pin z,50,30,4 --case pull:0,0,-200 --voxel 1.5 --sf 2 --out out/</pre>
+<ul>
+<li><code>--fix SIDE</code>: the face that is held (<code>xmin</code> … <code>zmax</code>).</li>
+<li><code>--pin A,C1,C2,R</code>: the load goes in through a bore along axis A at the other two coordinates, radius R.</li>
+<li><code>--case NAME:FX,FY,FZ</code>: a load case in N (several allowed; an optional <code>:MX,MY,MZ</code> twist in N·mm).</li>
+<li><code>--voxel</code>: cube size in mm. Smaller is finer and slower (1.5 mm on a 150 mm foot: about 40 s).</li>
+</ul>
+<h3>stress3d_printed</h3>
+<p>As <code>stress3d</code>, plus the print settings: <code>--walls 8 --top-layers 8 --bottom-layers 3 --layer 0.2 --infill 0.25</code>. <code>--infill-exp 1</code> gives the stiff (upper) bound, <code>2</code> the soft (lower) bound: run both if unsure. The part stands on its <code>zmin</code> face as printed.</p>
+<h3>eso3d</h3>
+<pre>taskset -c 0-9 target/release/eso3d reach=150 base_y=80 base_z=100 tip=20 voxel=2.5 \
+  force=50 side=15 material=petg-printed sf=4 holes=20:30,-20:30 out=run1</pre>
+<p>Writes the voxel STL and a smooth STL. Holes default to Ø4.5 with a Ø8.4, 90° countersink (<code>hole=</code>, <code>sink=</code>).</p>
+<h3>beam_opt</h3>
+<pre>target/release/beam_opt length=5000 depth=400 elem=10 load=98.1 gpu=1 jobs=10 --out beam/</pre>
+<p>A starting point only: for long beams the weight is set by buckling, and a tube often wins (it did for the 5 m beam).</p>
+
+<h2>10. Material library</h2>
+<table>
+<tr><th>Id</th><th>Material</th><th>Values from</th></tr>
+<tr><td><code>aluminium-6061-t6</code></td><td>Aluminium 6061-T6</td><td>Spec minimums: yield 240, tensile 260 MPa</td></tr>
+<tr><td><code>aluminium-7075-t6</code></td><td>Aluminium 7075-T6</td><td>Spec minimums: 460 / 540 MPa</td></tr>
+<tr><td><code>aluminium-5083-h111</code></td><td>Aluminium 5083-H111</td><td>Spec minimums up to 80 mm: 115 / 270 MPa</td></tr>
+<tr><td><code>steel-s235jr</code></td><td>Steel S235JR</td><td>EN 10025-2 minimums</td></tr>
+<tr><td><code>steel-s355jr</code></td><td>Steel S355JR</td><td>EN 10025-2 minimums</td></tr>
+<tr><td><code>stainless-304</code></td><td>Stainless 304</td><td>ASTM A240 minimums</td></tr>
+<tr><td><code>stainless-316l</code></td><td>Stainless 316L</td><td>ASTM A240 minimums</td></tr>
+<tr><td><code>titanium-ti6al4v</code></td><td>Titanium Ti-6Al-4V</td><td>ASTM B348 Grade 5 minimums</td></tr>
+<tr><td><code>pla-printed</code></td><td>PLA, printed</td><td>Prusament PLA data sheet</td></tr>
+<tr><td><code>petg-printed</code></td><td>PETG, printed</td><td>Prusament PETG data sheet</td></tr>
+<tr><td><code>abs-printed</code></td><td>ABS, printed</td><td>Bambu Lab ABS data sheet</td></tr>
+<tr><td><code>asa-printed</code></td><td>ASA, printed</td><td>Bambu Lab ASA V3.0</td></tr>
+<tr><td><code>paht-cf-printed</code></td><td>PAHT-CF, printed</td><td>Bambu Lab PAHT-CF V3.0 (dry)</td></tr>
+<tr><td><code>pa12-sls</code></td><td>Nylon PA12, SLS</td><td>EOS PA 2200 data sheet</td></tr>
+</table>
+<p><b>For printed parts:</b> the library holds the strength <b>along</b> the layers. Across the layers (Z) a print is much weaker: PLA 38, PETG 30, ABS 32, ASA 31, PAHT-CF 47, PA12 42 MPa. If your part is pulled apart across its layers, use a higher safety factor or turn the part on the print bed. Each plastic is one brand; other brands differ. PAHT-CF that has taken up moisture is weaker than its card.</p>
+<p>To add or change a material: edit <code>materials/library.json</code>, run <code>./build.sh</code> (it regenerates <code>plugin.json</code>, runs every check and packs the zip), then <code>tests/cli-test.sh</code>, then install the new zip.</p>
+
+<h2>11. Limits</h2>
+<ul>
+<li>Linear elastic, small deflections, rigid supports, evenly spread loads. No buckling, fatigue, creep, heat or contact (except the experimental contact in <code>eso3d</code>).</li>
+<li>The stress check in SolidCraft is 2D: flat parts of one thickness, loads in the plane of the plate. For real 3D parts use <code>stress3d</code> on an exported STL.</li>
+<li>The plate optimiser designs for stiffness under one load; it knows nothing of strength or how the part is made.</li>
+<li>SolidCraft refuses to hand over very large meshes (over about 8,192 points), so big imported parts cannot be checked inside the plugin. Export the STL and use <code>stress3d</code>.</li>
+<li>No GPU inside SolidCraft: the plugin interface has no compute access. Only the command-line tools use the GPU.</li>
+</ul>
+
+<h2>12. Troubleshooting</h2>
+<table>
+<tr><th>Message or problem</th><th>What to do</th></tr>
+<tr><td>Commands missing after an install</td><td>Restart SolidCraft. Then check the version (section 2).</td></tr>
+<tr><td>Run button greyed out</td><td>A field the dialog cannot draw: use the <code>body</code> text field, not a list.</td></tr>
+<tr><td>"the design has several bodies; name one"</td><td>Fill in the Body field.</td></tr>
+<tr><td>"… is not closed, so it has no inside to analyse"</td><td>The body is a surface or has a gap. Fix the model, then check again.</td></tr>
+<tr><td>"material is named … but has other values than the library's"</td><td>Your own material shares a library name. Pick a library material in the form, or rename yours.</td></tr>
+<tr><td>"name a face (e.g. F1:-x), its number, or a side such as -x"</td><td>The face text was not understood. Use a side (<code>-x</code>) or copy the name from <code>model.faces</code>.</td></tr>
+<tr><td>"too thin for the grid" / "too tall and narrow"</td><td>Raise the cells, or change the width-to-height ratio.</td></tr>
+<tr><td>"the design already has a body named …"</td><td>Pick another Body name or delete the old body.</td></tr>
+<tr><td>"the optimiser left no material at the fixed edge"</td><td>Raise the material share or the iterations.</td></tr>
+<tr><td>Out of fuel / takes too long</td><td>Fewer cells or iterations, or use <code>plate_refine</code>.</td></tr>
+<tr><td>Peak stress rises every time you refine the grid</td><td>A sharp inside corner. Round it (Corner rounding, or a fillet) or judge by the 99th percentile.</td></tr>
+<tr><td>Warning: force through the plate ignored</td><td>Out-of-plane bending is not covered; use <code>stress3d</code>.</td></tr>
+</table>
+
+<h2>13. Files and folders</h2>
+<pre>docs/manual/                  this manual (HTML source and PDF)
+~/.local/share/solidcraft/plugins/gen-design-engine   the installed plugin (Linux)
+materials/library.json        the material library
+src/bin/*.rs                  the command-line tools (usage at the top of each)
+docs/runs/                    the wall-bracket run gallery
+tests/cli-test.sh             end-to-end test in the installed SolidCraft</pre>
+</body></html>
