@@ -34,7 +34,12 @@ Every picture below is the solver's own output, drawn by the tool's own renderer
 | [7](#run-7) | two-way bar sizing: thinner where the stress is low, thicker where it is high | 74.3 g (58.5 cm³) | 4.3 / 6.8 | 2.4 / 1.6 mm |
 | [8](#run-8) | run 7 + a slim frame instead of the full wall plate, **held only at the screws** | 57.9 g (45.6 cm³) | 4.1 / 6.8 | 6.0 / 3.3 mm |
 | [9](#run-9) | run 8 + tapered bars | 57.3 g (45.1 cm³) | 4.1 / 5.7 | 7.8 / 3.5 mm |
-| 10 | run 8 + the wall pushing back (contact): **still running**, added when it finishes | | | |
+| 10 | run 8 + the wall pushing back (`hold=contact`): **interim, still running**. Round 0 (before any bar was resized): 46.8 cm³, strips 12.0 mm | ~59 g (46.8 cm³) | 4.4 / 8.0 | 2.6 / 1.2 mm |
+
+Run 10 so far (checked 21 Nov, 02:38, round 2 of up to 10): round 0 passes with SF 4.4 / 8.0 at about the
+mass of run 8 and a tip that moves less than half as far (2.6 against 6.0 mm), because the wall now pushes back
+where the plate presses. Round 1 went lighter (32.7 cm³) and dropped under the target on the down load (SF 3.5), so
+the run is not finished and is **not a result yet**; the final design and its pictures follow when it ends.
 
 Things to know when comparing:
 

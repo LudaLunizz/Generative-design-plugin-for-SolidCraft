@@ -228,7 +228,7 @@ von Mises stress, scaled to each picture's own peak.
 | ![run 6, stress under 50 N down](docs/runs/run6-down-iso.jpg) | ![run 8, stress under 50 N down](docs/runs/run8-down-iso.jpg) |
 
 All views of runs 6 to 9, the numbers of runs 1 to 9 and the raw reports are in
-[docs/runs](docs/runs/README.md). Run 10 (the wall pushing back) is still computing.
+[docs/runs](docs/runs/README.md). Run 10 (the wall pushing back) is still computing; its first numbers are in the table.
 
 ## Hardening notes
 
