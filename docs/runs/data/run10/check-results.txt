@@ -1,0 +1,14 @@
+run10 (21 Nov 2026): refine list item 4, wall contact. run8's settings, but the wall pushes back where the
+plate presses on it (frictionless contact, lifts off where the plate pulls away), on top of the screws.
+  eso3d from=run5 out=run10 bars=1 size=1 plate=frame hold=contact rounds=10 holes=-6.5:41,-6.5:-41 hole=5.5 sink=10.4
+
+Result (round 9, the lightest that passes SF 4):
+  30.0 cm3 = 38.1 g PETG   (run8: 45.6 cm3 / 58 g; -34 %)
+  down: SF 4.1, tip 4.07 mm (run8 4.1 / 6.0 mm); wall pushes on 255 nodes
+  side: SF 5.0, tip 2.33 mm (run8 6.8 / 3.3 mm)
+  plate SF 4.7, strips 9.2 mm (run8 needed 21.6 mm strips)
+  mesh: 265,944 triangles, closed (0 open edges)
+Screws: 5 x 40 mm wood screws in fischer 6 mm plugs, same holes as run5/run8 (5.5 / cs 10.4).
+Caveats: the wall is rigid and frictionless; the edge of the pressed area is left out of the peak, like the
+supports. Not printed or tested yet.
+Code: issue #43, branch 43-wall-contact (Generative-design-plugin-for-SolidCraft).
