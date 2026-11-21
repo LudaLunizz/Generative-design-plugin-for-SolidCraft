@@ -3,7 +3,9 @@
 //!
 //! eso3d [key=value ...]   (all lengths mm)
 //!   reach=150 base_y=80 base_z=100 tip=20   frustum: wall face x=0, tip face x=reach, tip x tip
-//!   voxel=2.5  force=50 side=15            tip load: force N down (-Z) and side N along Y (two cases)
+//!   voxel=2.5  force=50 side=15            tip load: force N down (-Z) and side N along Y
+//!   loads=split knock=1                    split: two cases, down alone and side alone (+Y); real: down and side together,
+//!                                          the side load both ways (two cases); knock multiplies every force (a margin for knocks)
 //!   back=6 pad=8                           kept solid: wall plate thickness (screws), load pad depth
 //!   min_member=5                           no member thinner than this (opening after every round; 0 = off)
 //!   holes=y:z,y:z hole=4.5 sink=8.4        countersunk screw holes (diameters, 90 deg countersink) through the wall plate, in the smooth STL
@@ -963,6 +965,27 @@ fn screw_tension(holes: &[[f64; 2]], half_y: f64, half_z: f64, reach: f64, down:
     t_down.iter().zip(&t_side).map(|(a, b)| [*a, *b]).collect()
 }
 
+/// The tip load cases. split: down alone and side alone (+Y), as runs 1-10. real: down and side together, the
+/// side load both ways; down alone is left out because (linear) von Mises of a+b or of a-b is never below that
+/// of a. knock scales every force.
+fn load_cases(kind: &str, force: f64, side: f64, knock: f64) -> Result<Vec<Case>, String> {
+    if !(1.0..=10.0).contains(&knock) || !force.is_finite() || !side.is_finite() || force < 0.0 || side < 0.0 {
+        return Err("check force, side (0 or more) and knock (1-10)".into());
+    }
+    let (d, s) = (-force * knock, side * knock);
+    let case = |name: &str, f: [f64; 3]| Case { name: name.into(), force: f, moment: [0.0; 3] };
+    match kind {
+        "split" => Ok(vec![case("down", [0.0, 0.0, d]), case("side", [0.0, s, 0.0])]),
+        "real" => Ok(vec![case("down+side", [0.0, s, d]), case("down-side", [0.0, -s, d])]),
+        _ => Err(format!("loads={kind}: use split or real")),
+    }
+}
+
+/// "50 N down / 15 N side" style summary of the cases, for the reports.
+fn case_list(cases: &[Case]) -> String {
+    cases.iter().map(|c| format!("{} ({:.0} N down, {:+.0} N side)", c.name, -c.force[2], c.force[1])).collect::<Vec<_>>().join(", ")
+}
+
 /// "y:z,y:z" (mm on the wall face) -> hole centres; empty -> none.
 fn parse_holes(s: &str) -> Result<Vec<[f64; 2]>, String> {
     s.split(',').filter(|t| !t.is_empty()).map(|t| {
@@ -1016,10 +1039,7 @@ fn run() -> Result<(), String> {
 
     let fixed = Region::Side { axis: 0, max: false, depth: 0.5 * h };
     let load = Region::Side { axis: 0, max: true, depth: 0.5 * h };
-    let cases = [
-        Case { name: "down".into(), force: [0.0, 0.0, -force], moment: [0.0; 3] },
-        Case { name: "side".into(), force: [0.0, side, 0.0], moment: [0.0; 3] },
-    ];
+    let cases = load_cases(o.get("loads").map_or("split", String::as_str), force, side, num("knock", 1.0)?)?;
     let cv = num("check_voxel", 1.25)?;
     let wall_face = Region::Side { axis: 0, max: false, depth: 0.5 * cv };
     // wall = the wall face pushes back where the plate presses on it (lifts off where it pulls away)
@@ -1030,6 +1050,7 @@ fn run() -> Result<(), String> {
         Ok((g, sol, an))
     };
     if let Some(file) = o.get("check") {
+        println!("loads at the tip: {}", case_list(&cases));
         let (pos, tri) = read_stl(&std::fs::read(file).map_err(|e| format!("{file}: {e}"))?)?;
         let (g, sol, fin) = analyse_mesh(&pos, &tri, &fixed, false)?;
         let cells = sol.iter().filter(|v| **v).count();
@@ -1158,13 +1179,22 @@ fn run() -> Result<(), String> {
         }
     }
     if !holes.is_empty() {
-        let mut txt = format!("Screw pull-out (rigid plate tipping about the edge that presses on the wall; load {force} N down / {side} N side at x = {:.0} mm):\n", n[0] as f64 * h);
-        let shear = (force * force + side * side).sqrt() / holes.len() as f64;
-        for (t, [y, z]) in screw_tension(&holes, 0.5 * n[1] as f64 * h, 0.5 * n[2] as f64 * h, n[0] as f64 * h, force, side).iter().zip(&holes) {
-            let both = t[0] + t[1]; // both cases at once, added: on the safe side
+        let mut txt = format!("Screw pull-out (rigid plate tipping about the edge that presses on the wall; load {} at x = {:.0} mm):\n", case_list(&cases), n[0] as f64 * h);
+        // split cases are added as if they came together (on the safe side); real cases already are together
+        let split = cases.iter().any(|c| c.name == "side");
+        let (fd, fs) = (cases.iter().map(|c| -c.force[2]).fold(0.0, f64::max), cases.iter().map(|c| c.force[1].abs()).fold(0.0, f64::max));
+        let shear = (fd * fd + fs * fs).sqrt() / holes.len() as f64;
+        let per_case: Vec<Vec<[f64; 2]>> = if split {
+            vec![screw_tension(&holes, 0.5 * n[1] as f64 * h, 0.5 * n[2] as f64 * h, n[0] as f64 * h, fd, fs)]
+        } else {
+            cases.iter().map(|c| screw_tension(&holes, 0.5 * n[1] as f64 * h, 0.5 * n[2] as f64 * h, n[0] as f64 * h, -c.force[2], c.force[1])).collect()
+        };
+        let worst: Vec<[f64; 2]> = (0..holes.len()).map(|i| per_case.iter().map(|t| t[i]).max_by(|a, b| (a[0] + a[1]).total_cmp(&(b[0] + b[1]))).unwrap_or([0.0; 2])).collect();
+        for (t, [y, z]) in worst.iter().zip(&holes) {
+            let both = t[0] + t[1];
             // the head bears on the countersink cone; it would punch a plug its own size through the plate
             let (bear, punch) = (both / (std::f64::consts::PI * (sr * sr - hr * hr)), both / (std::f64::consts::PI * 2.0 * sr * xb));
-            txt += &format!("  hole {y}:{z}: pull {:.1} N down case, {:.1} N side case, {both:.1} N both = {:.1} kg on the wall plug; shear {shear:.1} N; head on the plate: bearing {bear:.1} MPa, punching shear {punch:.2} MPa (SF {:.0} / {:.0} on {strength} MPa)\n", t[0], t[1], both / 9.81, strength / bear, 0.577 * strength / punch);
+            txt += &format!("  hole {y}:{z}: pull {:.1} N from the down load, {:.1} N from the side load, {both:.1} N together = {:.1} kg on the wall plug; shear {shear:.1} N; head on the plate: bearing {bear:.1} MPa, punching shear {punch:.2} MPa (SF {:.0} / {:.0} on {strength} MPa)\n", t[0], t[1], both / 9.81, strength / bear, 0.577 * strength / punch);
         }
         print!("{txt}");
         std::fs::write(format!("{out}/screws.txt"), &txt).map_err(|e| e.to_string())?;
@@ -1286,6 +1316,7 @@ fn run() -> Result<(), String> {
         let v = volume(&tris);
         let mut rep = format!("Round bars from {}: {} pillars, each a round bar of its own voxel volume between its ends (fillets {blend} mm); sizing {} to SF {sf}, {round} rounds, kept round {used}{}\n", from.as_deref().unwrap_or("this run"), list.len(), match (two_way, taper) { (true, true) => "both ways, point by point along each bar (tapered)", (true, false) => "both ways (thinner and thicker)", (false, true) => "only thicker, point by point (tapered)", _ => "only thicker" }, if passed { " (the lightest that passes)" } else { " (NONE PASSED: the last one)" });
         rep += &format!("Wall plate: {}, {xb} mm thick; held {}\n", if strip > 0.0 { format!("frame (pads round screws and bar roots, {strip:.1} mm strips)") } else { "full box".into() }, match hold { "wall" => "on the whole wall face", "contact" => "at the screws (the material each screw clamps), and the wall pushes back where the plate presses on it (no friction)", _ => "only at the screws (the material each screw clamps; no wall contact, so on the safe side)" });
+        rep += &format!("Loads at the tip: {}\n", case_list(&cases));
         for (i, b) in list.iter().enumerate() {
             let (a, z) = (b.pts.first().copied().unwrap_or_default(), b.pts.last().copied().unwrap_or_default());
             rep += &format!("  bar {i:>2}: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0}), {:.0} mm long, pillar {:.2} cm3 -> diameter {:.1} mm; now {:.1} mm at the start, {:.1} at the end, {:.1} thinnest ({:.2} cm3), peak {:.2} MPa (SF {:.1})\n", a[0], a[1], a[2], z[0], z[1], z[2], b.length(), b.vol / 1000.0, 2.0 * r0[i], 2.0 * b.r.first().copied().unwrap_or(0.0), 2.0 * b.r.last().copied().unwrap_or(0.0), 2.0 * b.r.iter().copied().fold(f64::INFINITY, f64::min), b.volume() / 1000.0, peak[i], strength / peak[i].max(1e-12));
@@ -1473,6 +1504,15 @@ mod tests {
         assert!(edges.iter().all(|(a, b)| edges.contains(&(*b, *a))), "the mesh has an open edge");
         let tiny = tris.iter().filter(|t| { let c = cross(sub(t[1], t[0]), sub(t[2], t[0])); dot(c, c).sqrt() / 2.0 < 1e-4 }).count();
         assert_eq!(tiny, 0, "slivers");
+    }
+
+    #[test]
+    fn load_cases_split_real_and_knock() {
+        let split = load_cases("split", 50.0, 15.0, 1.0).unwrap();
+        assert_eq!(split.iter().map(|c| (c.name.as_str(), c.force)).collect::<Vec<_>>(), vec![("down", [0.0, 0.0, -50.0]), ("side", [0.0, 15.0, 0.0])]);
+        let real = load_cases("real", 50.0, 15.0, 2.0).unwrap();
+        assert_eq!(real.iter().map(|c| (c.name.as_str(), c.force)).collect::<Vec<_>>(), vec![("down+side", [0.0, 30.0, -100.0]), ("down-side", [0.0, -30.0, -100.0])]);
+        assert!(load_cases("both", 50.0, 15.0, 1.0).is_err() && load_cases("real", 50.0, 15.0, 0.5).is_err() && load_cases("real", -1.0, 15.0, 1.0).is_err());
     }
 
     #[test]
