@@ -193,6 +193,7 @@ solidcraft-cli run refine.json        # or ask Claude: MCP batch {"path": ...}</
 <pre>taskset -c 0-9 target/release/eso3d reach=150 base_y=80 base_z=100 tip=20 voxel=2.5 \
   force=50 side=15 material=petg-printed sf=4 holes=20:30,-20:30 out=run1</pre>
 <p>Writes the voxel STL and a smooth STL. Holes default to Ø4.5 with a Ø8.4, 90° countersink (<code>hole=</code>, <code>sink=</code>).</p>
+<p>Loads: by default two cases, <code>force</code> down alone and <code>side</code> sideways alone (one way). <code>loads=real</code> puts them together and checks the side load both ways; <code>knock=1.5</code> (1 to 10) multiplies every force as a margin for knocks. Set <code>force</code> to what really hangs on the bracket (N = kg × 9.81).</p>
 <h3>beam_opt</h3>
 <pre>target/release/beam_opt length=5000 depth=400 elem=10 load=98.1 gpu=1 jobs=10 --out beam/</pre>
 <p>A starting point only: for long beams the weight is set by buckling, and a tube often wins (it did for the 5 m beam).</p>
