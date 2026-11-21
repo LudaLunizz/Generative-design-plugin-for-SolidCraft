@@ -49,7 +49,7 @@ ol, ul { margin: 3pt 0 6pt; padding-left: 16pt; }
 <li>Download <code>gen-design-engine-&lt;version&gt;.zip</code> and its <code>.sha256</code> from the latest GitHub release.</li>
 <li>Check the hash: <code>sha256sum gen-design-engine-*.zip</code> and compare it with the number in the <code>.sha256</code> file. (The v0.5.0 file once named the path <code>dist/...</code>; comparing by eye always works.)</li>
 <li>In SolidCraft: <b>Preferences › Plugins › Install plugin…</b> (<b>File › Plugins…</b> opens the same page) and pick the zip. Installing a newer version over an older one replaces it.</li>
-<li><b>Restart SolidCraft.</b> A window that was already open keeps the old version until it restarts.</li>
+<li>No restart is needed: SolidCraft 0.45.0 picks up the new version in a window that is already open (the buttons change right away). If the commands or labels do not change, restart SolidCraft.</li>
 </ol>
 <p>The plugin asks for no folders, no network, no clock and no extra permissions. It stays inside SolidCraft's default limits, so SolidCraft asks for no extra approval.</p>
 <h3>Check what is installed</h3>
@@ -230,7 +230,7 @@ solidcraft-cli run refine.json        # or ask Claude: MCP batch {"path": ...}</
 <h2>12. Troubleshooting</h2>
 <table>
 <tr><th>Message or problem</th><th>What to do</th></tr>
-<tr><td>Commands missing after an install</td><td>Restart SolidCraft. Then check the version (section 2).</td></tr>
+<tr><td>Commands missing or old after an install</td><td>Restart SolidCraft (normally not needed). Then check the version (section 2).</td></tr>
 <tr><td>Run button greyed out</td><td>A field the dialog cannot draw: use the <code>body</code> text field, not a list.</td></tr>
 <tr><td>"the design has several bodies; name one"</td><td>Fill in the Body field.</td></tr>
 <tr><td>"… is not closed, so it has no inside to analyse"</td><td>The body is a surface or has a gap. Fix the model, then check again.</td></tr>
