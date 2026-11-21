@@ -1,0 +1,30 @@
+run4 (20 Nov 2026): run3's design (mask.bin) re-smoothed with two countersunk screw holes.
+  eso3d from=run4 out=run4 holes=-6.5:41,-6.5:-41
+Holes: user's standard screw, hole 4.5 mm, countersink 8.4 mm at 90 deg, countersink on the front face of the
+5 mm wall plate (x = 5), screw goes in along x into the wall. Centres y = -6.5, z = +41 / -41 (9 mm from the
+top/bottom edge): the only spots high/low on the plate with a clear screwdriver path (no arm within 6.75 mm of
+the axis along the whole 150 mm).
+Measured on the STL: hole 4.50 mm on the wall face and through the plate, countersink 8.54 mm at the face.
+SolidCraft 0.45: one closed body, bbox 150 x 80 x 100, 72.56 cm3 (= voxels 72.9 minus the two holes, ~0.11 cm3 each).
+Stress check (eso3d check=run4/bracket-smooth.stl check_voxel=1.25, PETG, 50 N down + 15 N side):
+  down: peak 8.55 MPa, SF 5.5, tip moves 1.3 mm   side: peak 5.90 MPa, SF 8.0, tip 3.8 mm   PASS (needed SF 4)
+Limit: the check holds the whole wall face fixed, not just the two screws. It does not check screw pull-out
+or the plate bending between the screws.
+
+Screw pull-out check (20 Nov, eso3d holes=..., also in screws.txt): rigid plate tipping about the edge that
+presses on the wall, load at the tip face (x = 150 mm).
+  top screw (z +41):    81.6 N (50 N down) + 24.2 N (15 N side) = 105.8 N = 10.8 kg pull on the wall plug
+  bottom screw (z -41):  8.1 N + 24.2 N = 32.3 N = 3.3 kg
+  side load the other way (-y) tips about the nearer edge: 33.6 N per screw -> top screw worst ~115 N (11.7 kg)
+  shear per screw 26 N. Screw head in the PETG plate: bearing 2.7 MPa, punching 0.8 MPa -> SF 18 / 34 (safe).
+The weak point is the wall plug, not the plastic: compare ~115 N with the plug's RECOMMENDED tension load
+(the maker's figure already holds their safety factor) for your wall type.
+
+Wall plug (20 Nov): concrete wall, fischer 6 mm plugs. fischer SX Plus datasheet, recommended load for one
+SX Plus 6 x 30 in concrete >= C20/25: 0.65 kN (safety factors included; valid for tension, shear and
+combined), for a 5 mm wood screw, min. edge distance 35 mm. (SX Plus 6 x 50: 1.30 kN; old SX 6 x 30: 0.65 kN.)
+Top screw needs ~115 N pull + 26 N shear (~118 N together) = 18 % of 650 N -> OK, with fischer's own
+safety factors on top.
+Catch: the table assumes a 5 mm screw; the 4.5 mm holes only take a 4 mm screw (the plug's lower limit). fischer
+gives no value for 4 mm, so the capacity is lower by an unknown amount. For the full 0.65 kN: holes 5.5 mm,
+countersink ~10 mm, 5 mm countersunk wood screws.

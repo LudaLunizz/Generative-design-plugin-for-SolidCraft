@@ -1,0 +1,3 @@
+down: away peak 6.49 MPa (SF 7.2 on 47 MPa), p99 2.74, tip moves 1.380 mm
+side: away peak 2.98 MPa (SF 15.8 on 47 MPa), p99 1.58, tip moves 0.763 mm
+4663 cells = 72.9 cm3 = 92.5 g (14 % of the frustum), stopped: this round had SF 3.9 < 4, kept the one before, 151 s

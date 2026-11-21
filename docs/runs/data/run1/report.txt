@@ -1,0 +1,3 @@
+down: away peak 2.71 MPa (SF 17.4 on 47 MPa), p99 2.05, tip moves 0.582 mm
+side: away peak 3.26 MPa (SF 14.4 on 47 MPa), p99 1.86, tip moves 1.301 mm
+3955 cells = 61.8 cm3 = 78.5 g (12 % of the frustum), reached the target share 0.12, 231 s

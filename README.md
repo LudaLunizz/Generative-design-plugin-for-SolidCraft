@@ -217,6 +217,19 @@ A design from `beam_opt` is a starting point: the plate-truss weight is limited 
 lateral-torsional buckling, not by stiffness or strength, and none of this replaces a proper
 structural calculation.
 
+## Run gallery: the wall bracket
+
+What the 3D tools produce, from the wall-bracket runs of `eso3d` (50 N down + 15 N sideways at the tip,
+PETG, safety factor 4): run 6 (round bars, 94 g) and run 8 (sized bars on a slim frame, 58 g). Colours are
+von Mises stress, scaled to each picture's own peak.
+
+| Run 6, 73.8 cm³, SF 7.6 / 15.0 | Run 8, 45.6 cm³, SF 4.1 / 6.8 |
+|---|---|
+| ![run 6, stress under 50 N down](docs/runs/run6-down-iso.jpg) | ![run 8, stress under 50 N down](docs/runs/run8-down-iso.jpg) |
+
+All views of runs 6 to 9, the numbers of runs 1 to 9 and the raw reports are in
+[docs/runs](docs/runs/README.md). Run 10 (the wall pushing back) is still computing.
+
 ## Hardening notes
 
 - Inputs are hostile: unknown fields, non-objects, bad numbers, empty/duplicate/oversized body
