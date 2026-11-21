@@ -17,7 +17,8 @@
 //!   taper=1                                size every point along a bar on its own (thick roots, thin middles), smoothed
 //!   size=1                                 bars also get thinner where SF > 1.3 x sf (not below min_member); keeps the lightest round that passes
 //!   plate=frame [strip=12] hold=screws     wall plate as pads round screws and bar roots joined by strips; held only at the
-//!                                          screws (default with a frame; hold=wall glues the whole wall face as before)
+//!                                          screws (default with a frame; hold=wall glues the whole wall face as before;
+//!                                          hold=contact: screws, and the wall face pushes back where the plate presses)
 //! check and bars also write CASE-stress.ply (colour per point, for Blender) and CASE-stress-{iso,side,top}.png.
 //! Stops at the target share or just before the safety factor (away from the load/support zones) drops
 //! below sf, and writes DIR/bracket.stl (voxel faces, wall at x=0, Z up), report.json and heat maps.
@@ -25,7 +26,7 @@
 #![allow(clippy::indexing_slicing, clippy::cast_precision_loss)] // command-line tool: indices come from the grid itself
 
 use generative_design_engine::library::Library;
-use generative_design_engine::stress3d::{Analysis, Case, Grid, Region, Setup, analyse, heat, png, projection, read_stl, voxelize};
+use generative_design_engine::stress3d::{Analysis, Case, Contact, Grid, Region, Setup, analyse, heat, png, projection, read_stl, voxelize};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -1020,15 +1021,17 @@ fn run() -> Result<(), String> {
         Case { name: "side".into(), force: [0.0, side, 0.0], moment: [0.0; 3] },
     ];
     let cv = num("check_voxel", 1.25)?;
-    let analyse_mesh = |pos: &[[f64; 3]], tri: &[[u32; 3]], fixed: &Region| -> Result<(Grid, Vec<bool>, Analysis), String> {
+    let wall_face = Region::Side { axis: 0, max: false, depth: 0.5 * cv };
+    // wall = the wall face pushes back where the plate presses on it (lifts off where it pulls away)
+    let analyse_mesh = |pos: &[[f64; 3]], tri: &[[u32; 3]], fixed: &Region, wall: bool| -> Result<(Grid, Vec<bool>, Analysis), String> {
         let (g, sol) = voxelize(pos, tri, cv)?;
-        let setup = Setup { grid: &g, solid: &sol, e_mpa: e_gpa * 1000.0, nu, fixed, load: &Region::Side { axis: 0, max: true, depth: 0.5 * cv }, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true };
+        let setup = Setup { grid: &g, solid: &sol, e_mpa: e_gpa * 1000.0, nu, fixed, load: &Region::Side { axis: 0, max: true, depth: 0.5 * cv }, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true, contact: wall.then_some(Contact { region: &wall_face, axis: 0, push: 1.0 }) };
         let an = analyse(&setup, &cases, |_| {})?;
         Ok((g, sol, an))
     };
     if let Some(file) = o.get("check") {
         let (pos, tri) = read_stl(&std::fs::read(file).map_err(|e| format!("{file}: {e}"))?)?;
-        let (g, sol, fin) = analyse_mesh(&pos, &tri, &fixed)?;
+        let (g, sol, fin) = analyse_mesh(&pos, &tri, &fixed, false)?;
         let cells = sol.iter().filter(|v| **v).count();
         eprintln!("{file}: {}x{}x{} voxels of {cv} mm, {cells} cells = {:.1} cm3", g.n[0], g.n[1], g.n[2], cells as f64 * cv.powi(3) / 1000.0);
         {
@@ -1086,7 +1089,7 @@ fn run() -> Result<(), String> {
         solid = bytes.iter().map(|b| *b != 0).collect();
         "smoothing only".to_string()
     } else { loop {
-        let setup = Setup { grid: &grid, solid: &solid, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid: true };
+        let setup = Setup { grid: &grid, solid: &solid, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid: true, contact: None };
         let r = analyse(&setup, &cases, |_| {})?;
         let away = r.cases.iter().map(|c| c.max_vm_away).fold(0.0, f64::max);
         let count = r.cases[0].vm.iter().filter(|v| !v.is_nan()).count();
@@ -1194,8 +1197,8 @@ fn run() -> Result<(), String> {
         let fixed_bars = match hold {
             "wall" => Region::Side { axis: 0, max: false, depth: 0.5 * h }, // as the earlier runs
             // the material each screw clamps: round its axis out to the countersink plus 1.5 mm, through the plate
-            "screws" if !holes.is_empty() => Region::Union(holes.iter().map(|[y, z]| Region::Cylinder { point: [0.0, *y, *z], dir: [1.0, 0.0, 0.0], r: sr + 1.5, len: xb }).collect()),
-            _ => return Err("hold: wall, or screws (needs holes=)".into()),
+            "screws" | "contact" if !holes.is_empty() => Region::Union(holes.iter().map(|[y, z]| Region::Cylinder { point: [0.0, *y, *z], dir: [1.0, 0.0, 0.0], r: sr + 1.5, len: xb }).collect()),
+            _ => return Err("hold: wall, screws or contact (both need holes=)".into()),
         };
         if strip > 0.0 && (holes.is_empty() || !(4.0..=40.0).contains(&strip)) {
             return Err("plate=frame needs holes= and strip 4-40 mm".into());
@@ -1206,7 +1209,7 @@ fn run() -> Result<(), String> {
         loop {
             let tris = bar_mesh(&grid, &keep, &list, blend, res, &holes, [hr, sr], xb, strip);
             let (pos, tri) = index(&tris);
-            let (g, sol, an) = analyse_mesh(&pos, &tri, &fixed_bars)?;
+            let (g, sol, an) = analyse_mesh(&pos, &tri, &fixed_bars, hold == "contact")?;
             // each bar's peak: the material cells nearest to it, outside the kept plate and pad; the plate's own
             // peak away from where it is held (the wall face, or round the screws)
             let mut station: Vec<Vec<f64>> = list.iter().map(|b| vec![0.0; b.pts.len()]).collect();
@@ -1274,14 +1277,14 @@ fn run() -> Result<(), String> {
         std::fs::write(format!("{out}/bars.stl"), tris_stl(&tris)).map_err(|e| e.to_string())?;
         let v = volume(&tris);
         let mut rep = format!("Round bars from {}: {} pillars, each a round bar of its own voxel volume between its ends (fillets {blend} mm); sizing {} to SF {sf}, {round} rounds, kept round {used}{}\n", from.as_deref().unwrap_or("this run"), list.len(), match (two_way, taper) { (true, true) => "both ways, point by point along each bar (tapered)", (true, false) => "both ways (thinner and thicker)", (false, true) => "only thicker, point by point (tapered)", _ => "only thicker" }, if passed { " (the lightest that passes)" } else { " (NONE PASSED: the last one)" });
-        rep += &format!("Wall plate: {}, {xb} mm thick; held {}\n", if strip > 0.0 { format!("frame (pads round screws and bar roots, {strip:.1} mm strips)") } else { "full box".into() }, if hold == "wall" { "on the whole wall face" } else { "only at the screws (the material each screw clamps; no wall contact, so on the safe side)" });
+        rep += &format!("Wall plate: {}, {xb} mm thick; held {}\n", if strip > 0.0 { format!("frame (pads round screws and bar roots, {strip:.1} mm strips)") } else { "full box".into() }, match hold { "wall" => "on the whole wall face", "contact" => "at the screws (the material each screw clamps), and the wall pushes back where the plate presses on it (no friction)", _ => "only at the screws (the material each screw clamps; no wall contact, so on the safe side)" });
         for (i, b) in list.iter().enumerate() {
             let (a, z) = (b.pts.first().copied().unwrap_or_default(), b.pts.last().copied().unwrap_or_default());
             rep += &format!("  bar {i:>2}: ({:.0}, {:.0}, {:.0}) -> ({:.0}, {:.0}, {:.0}), {:.0} mm long, pillar {:.2} cm3 -> diameter {:.1} mm; now {:.1} mm at the start, {:.1} at the end, {:.1} thinnest ({:.2} cm3), peak {:.2} MPa (SF {:.1})\n", a[0], a[1], a[2], z[0], z[1], z[2], b.length(), b.vol / 1000.0, 2.0 * r0[i], 2.0 * b.r.first().copied().unwrap_or(0.0), 2.0 * b.r.last().copied().unwrap_or(0.0), 2.0 * b.r.iter().copied().fold(f64::INFINITY, f64::min), b.volume() / 1000.0, peak[i], strength / peak[i].max(1e-12));
         }
         rep += &format!("  plate: peak {plate_peak:.2} MPa (SF {:.1}) away from where it is held\n", strength / plate_peak.max(1e-12));
         for c in &an.cases {
-            rep += &format!("{}: away peak {:.2} MPa (SF {:.1} on {strength} MPa), tip moves {:.3} mm (check on {cv} mm voxels)\n", c.name, c.max_vm_away, strength / c.max_vm_away.max(1e-12), c.max_disp);
+            rep += &format!("{}: away peak {:.2} MPa (SF {:.1} on {strength} MPa), tip moves {:.3} mm (check on {cv} mm voxels){}\n", c.name, c.max_vm_away, strength / c.max_vm_away.max(1e-12), c.max_disp, if hold == "contact" { format!("; wall pushes on {} nodes (settled in {} solves)", c.contact_nodes, c.contact_rounds) } else { String::new() });
         }
         rep += "  (a bar's peak counts only material outside the plate and the tip pad; the away peak also counts inside them)\n";
         rep += &format!("bars.stl: {} triangles, {:.1} cm3 = {:.1} g (voxel design {:.1} cm3; arms {:.1} cm3, of which {:.2} in no pillar)\n", tris.len(), v / 1000.0, v / 1000.0 * m.strengths().density_kg_m3.unwrap_or(1270.0) / 1000.0, count as f64 * cell_cm3, arms / 1000.0, lost / 1000.0);
@@ -1294,7 +1297,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     // final analysis of exactly what was written
-    let setup = Setup { grid: &grid, solid: &solid, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true };
+    let setup = Setup { grid: &grid, solid: &solid, e_mpa: e_gpa * 1000.0, nu, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 50_000, exclude_layers: 2, cell_scale: None, multigrid: true, contact: None };
     let fin = analyse(&setup, &cases, |_| {})?;
     let mut rep = String::new();
     for c in &fin.cases {

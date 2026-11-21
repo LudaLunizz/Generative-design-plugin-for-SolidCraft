@@ -307,6 +307,15 @@ pub struct Setup<'a> {
     pub cell_scale: Option<&'a [f64]>,
     /// Precondition with multigrid (grids of a few thousand free DOFs or more); false = Jacobi.
     pub multigrid: bool,
+    /// Nodes resting on a rigid surface (a wall): held along `axis` only while the surface pushes in the
+    /// `push` direction (+1 or -1), free to lift off, no friction. Settled per case by re-solving.
+    pub contact: Option<Contact<'a>>,
+}
+
+pub struct Contact<'a> {
+    pub region: &'a Region,
+    pub axis: usize,
+    pub push: f64,
 }
 
 pub struct CaseResult {
@@ -325,6 +334,9 @@ pub struct CaseResult {
     pub max_disp_at: P3,
     pub cg_iterations: usize,
     pub converged: bool,
+    /// Contact nodes the surface pushes on at the end, and the solves it took to settle (1 = no contact).
+    pub contact_nodes: usize,
+    pub contact_rounds: usize,
 }
 
 pub struct Analysis {
@@ -491,7 +503,17 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             std::array::from_fn(|i| 3 * nodes.get(i / 3).copied().unwrap_or(0) + i % 3)
         })
         .collect();
-    let apply = |u: &[f64], y: &mut [f64]| {
+    // Contact DOFs: on material, not already held, not loaded.
+    let load_set: BTreeSet<usize> = load_nodes.iter().copied().collect();
+    let contact_dofs: Vec<usize> = match &s.contact {
+        Some(c) if c.axis < 3 => select(c.region, grid, &active, &mlo, &mhi).into_iter().filter(|n| !fixed_set.contains(n) && !load_set.contains(n)).map(|n| 3 * n + c.axis).collect(),
+        Some(_) => return Err("contact axis must be 0, 1 or 2".into()),
+        None => Vec::new(),
+    };
+    let push = s.contact.as_ref().map_or(1.0, |c| c.push.signum());
+    let base_fixed = fixed;
+    // K u; DOFs in `fixed` give 0 (an empty mask gives the full product).
+    let apply_with = |fixed: &[bool], u: &[f64], y: &mut [f64]| {
         y.iter_mut().for_each(|v| *v = 0.0);
         for (d, ck) in dofs.iter().zip(&cell_k) {
             let ue = d.map(|i| u.get(i).copied().unwrap_or(0.0));
@@ -507,7 +529,7 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
                 }
             }
         }
-        for (v, f) in y.iter_mut().zip(&fixed) {
+        for (v, f) in y.iter_mut().zip(fixed) {
             if *f {
                 *v = 0.0;
             }
@@ -521,37 +543,44 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             }
         }
     }
-    let inv: Vec<f64> = diag.iter().zip(&fixed).map(|(d, f)| if *f || *d <= 0.0 { 1.0 } else { 1.0 / d }).collect();
-
-    // Multigrid for the big grids: the coarse levels are built once and serve every load case.
-    let hierarchy = if s.multigrid {
-        let mut stiffness = vec![0.0; grid.cells()];
-        for (c, ck) in cells.iter().zip(&cell_k) {
-            if let Some(slot) = stiffness.get_mut(*c) {
-                *slot = *ck;
+    let mut stiffness = vec![0.0; grid.cells()];
+    for (c, ck) in cells.iter().zip(&cell_k) {
+        if let Some(slot) = stiffness.get_mut(*c) {
+            *slot = *ck;
+        }
+    }
+    let mut base_support = vec![false; ndof];
+    for n in &fixed_set {
+        for d in 0..3 {
+            if let Some(slot) = base_support.get_mut(3 * n + d) {
+                *slot = true;
             }
         }
-        let mut support = vec![false; ndof];
-        for n in &fixed_set {
-            for d in 0..3 {
-                if let Some(slot) = support.get_mut(3 * n + d) {
-                    *slot = true;
+    }
+    // Inverse diagonal and multigrid levels for one set of held DOFs; rebuilt only when the contact set changes,
+    // so without contact they are built once and serve every load case.
+    let mut built: Option<(Vec<bool>, Vec<f64>, Option<crate::mg3d::Hierarchy3>)> = None;
+    let build = |fixed: &[bool], warnings: &mut Vec<String>, progress: &mut dyn FnMut(&str)| {
+        let inv: Vec<f64> = diag.iter().zip(fixed).map(|(d, f)| if *f || *d <= 0.0 { 1.0 } else { 1.0 / d }).collect();
+        let hierarchy = if s.multigrid {
+            let support: Vec<bool> = fixed.iter().zip(&base_support).zip(&base_fixed).map(|((f, b), was)| *b || (*f && !*was)).collect();
+            let system = crate::mg3d::FineSystem { n: grid.n, ke: &ke, cell_k: &stiffness, fixed, support: &support };
+            progress("building the multigrid levels");
+            let apply = |u: &[f64], y: &mut [f64]| apply_with(fixed, u, y);
+            match crate::mg3d::Hierarchy3::build(&system, crate::mg3d::Settings::default(), &crate::mg3d::FineOps { apply: &apply, inv: &inv }) {
+                Ok(h) => Some(h),
+                Err(reason) => {
+                    let w = format!("multigrid not used ({reason}); falling back to the plain solver");
+                    if !reason.contains("small enough") && !warnings.contains(&w) {
+                        warnings.push(w);
+                    }
+                    None
                 }
             }
-        }
-        let system = crate::mg3d::FineSystem { n: grid.n, ke: &ke, cell_k: &stiffness, fixed: &fixed, support: &support };
-        progress("building the multigrid levels");
-        match crate::mg3d::Hierarchy3::build(&system, crate::mg3d::Settings::default(), &crate::mg3d::FineOps { apply: &apply, inv: &inv }) {
-            Ok(h) => Some(h),
-            Err(reason) => {
-                if !reason.contains("small enough") {
-                    warnings.push(format!("multigrid not used ({reason}); falling back to the plain solver"));
-                }
-                None
-            }
-        }
-    } else {
-        None
+        } else {
+            None
+        };
+        (fixed.to_vec(), inv, hierarchy)
     };
 
     // Load distribution over the load nodes: even force, couple as a rigid rotation.
@@ -587,15 +616,64 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             }
         }
         let mut u = vec![0.0; ndof];
-        let precondition = |r: &[f64], z: &mut [f64]| match &hierarchy {
-            Some(h) => z.copy_from_slice(&h.precondition(&crate::mg3d::FineOps { apply: &apply, inv: &inv }, r)),
-            None => {
-                for ((zi, ri), di) in z.iter_mut().zip(r).zip(&inv) {
-                    *zi = ri * di;
+        // Start with the surface pushing on every contact node; drop the ones it would have to pull, add back
+        // the ones that would sink into it, until no node changes.
+        let mut pressed = vec![true; contact_dofs.len()];
+        let (mut it, mut ok, mut rounds) = (0, true, 0);
+        let fnorm = f.iter().map(|v| v * v).sum::<f64>().sqrt();
+        loop {
+            rounds += 1;
+            let mut held = base_fixed.clone();
+            for (d, p) in contact_dofs.iter().zip(&pressed) {
+                if *p && let Some(slot) = held.get_mut(*d) {
+                    *slot = true;
+                    if let Some(ud) = u.get_mut(*d) {
+                        *ud = 0.0;
+                    }
                 }
             }
-        };
-        let (it, ok) = pcg(&apply, &precondition, &f, &mut u, s.cg_tol, s.cg_max);
+            if built.as_ref().is_none_or(|b| b.0 != held) {
+                built = Some(build(&held, &mut warnings, &mut progress));
+            }
+            let Some((_, inv, hierarchy)) = built.as_ref() else { unreachable!() };
+            let apply = |x: &[f64], y: &mut [f64]| apply_with(&held, x, y);
+            let precondition = |r: &[f64], z: &mut [f64]| match hierarchy {
+                Some(h) => z.copy_from_slice(&h.precondition(&crate::mg3d::FineOps { apply: &apply, inv }, r)),
+                None => {
+                    for ((zi, ri), di) in z.iter_mut().zip(r).zip(inv) {
+                        *zi = ri * di;
+                    }
+                }
+            };
+            let (i, o) = pcg(&apply, &precondition, &f, &mut u, s.cg_tol, s.cg_max);
+            it += i;
+            ok &= o;
+            if contact_dofs.is_empty() {
+                break;
+            }
+            let mut ku = vec![0.0; ndof];
+            apply_with(&[], &u, &mut ku);
+            let umax = u.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let mut changed = 0;
+            for (d, p) in contact_dofs.iter().zip(pressed.iter_mut()) {
+                let reaction = push * (ku.get(*d).copied().unwrap_or(0.0) - f.get(*d).copied().unwrap_or(0.0));
+                let sink = push * u.get(*d).copied().unwrap_or(0.0);
+                let now = if *p { reaction >= -1e-9 * fnorm } else { sink < -1e-9 * umax };
+                if now != *p {
+                    *p = now;
+                    changed += 1;
+                }
+            }
+            if changed == 0 {
+                break;
+            }
+            if rounds >= 30 {
+                warnings.push(format!("{}: the wall contact did not settle in 30 solves ({changed} nodes still switching)", case.name));
+                break;
+            }
+            progress(&format!("{}: wall contact, {changed} nodes switched", case.name));
+        }
+        let contact_nodes = pressed.iter().filter(|p| **p).count();
         // Stresses at cell centres.
         let b0 = strain_matrix(0.0, 0.0, 0.0, grid.h);
         let lam = s.e_mpa * s.nu / ((1.0 + s.nu) * (1.0 - 2.0 * s.nu));
@@ -662,6 +740,8 @@ pub fn analyse(s: &Setup, cases: &[Case], mut progress: impl FnMut(&str)) -> Res
             max_disp_at: grid.node_pos(max_n),
             cg_iterations: it,
             converged: ok,
+            contact_nodes,
+            contact_rounds: rounds,
         });
     }
     Ok(Analysis { cells_material: cells.len(), cells_dropped: dropped, fixed_nodes: fixed_nodes.len(), load_nodes: load_nodes.len(), cases: results, warnings })
@@ -900,6 +980,35 @@ mod tests {
         assert!(!inside(&both, &[1.0, 0.0, 0.0], &lo, &hi), "between the screws");
     }
 
+    /// Beam on a wall, one screw near the top, tip loaded down: the bottom presses on the wall, the top lifts
+    /// off. With the screw in the middle, pulling straight off the wall leaves no contact, so it matches the
+    /// screw-only hold exactly.
+    #[test]
+    fn wall_contact_pushes_only() {
+        let (p, t) = box_stl([0.0, -5.0, -10.0], [40.0, 5.0, 10.0]);
+        let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
+        let screw = |z: f64| Region::Cylinder { point: [0.0, 0.0, z], dir: [1.0, 0.0, 0.0], r: 2.5, len: 3.0 };
+        let glued = Region::Side { axis: 0, max: false, depth: 0.01 };
+        let load = Region::Side { axis: 0, max: true, depth: 0.01 };
+        let run = |fixed: &Region, contact: bool, force: P3| {
+            let contact = contact.then_some(Contact { region: &glued, axis: 0, push: 1.0 });
+            let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed, load: &load, cg_tol: 1e-9, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid: true, contact };
+            let a = analyse(&setup, &[Case { name: "c".into(), force, moment: [0.0; 3] }], |_| {}).unwrap();
+            assert!(a.cases[0].converged && a.warnings.is_empty(), "{:?}", a.warnings);
+            a.cases.into_iter().next().unwrap()
+        };
+        let down = [0.0, 0.0, -20.0];
+        let (free, wall, stuck) = (run(&screw(6.0), false, down), run(&screw(6.0), true, down), run(&glued, false, down));
+        let face = 11 * 21; // wall-face nodes
+        assert!(wall.contact_nodes > 10 && wall.contact_nodes < face / 2, "bottom part only: {}", wall.contact_nodes);
+        assert!(wall.contact_rounds > 1);
+        assert!(stuck.max_disp < wall.max_disp && wall.max_disp < 0.8 * free.max_disp, "{} {} {}", stuck.max_disp, wall.max_disp, free.max_disp);
+        let pull = [20.0, 0.0, 0.0];
+        let (free, wall) = (run(&screw(0.0), false, pull), run(&screw(0.0), true, pull));
+        assert_eq!(wall.contact_nodes, 0);
+        assert!((wall.max_disp - free.max_disp).abs() < 1e-6 * wall.max_disp);
+    }
+
     #[test]
     fn brick_is_symmetric_with_six_rigid_modes() {
         let k = brick_stiffness(0.3);
@@ -949,7 +1058,7 @@ mod tests {
         let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
         let fixed = Region::Side { axis: 0, max: false, depth: 0.01 };
         let load = Region::Side { axis: 0, max: true, depth: 0.01 };
-        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid: true };
+        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-8, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid: true, contact: None };
         let cases = [Case { name: "tip".into(), force: [0.0, 0.0, -10.0], moment: [0.0; 3] }];
         let a = analyse(&setup, &cases, |_| {}).unwrap();
         let r = &a.cases[0];
@@ -970,7 +1079,7 @@ mod tests {
         let load = Region::Side { axis: 0, max: true, depth: 0.01 };
         let cases = [Case { name: "tip".into(), force: [0.0, 0.0, -10.0], moment: [0.0; 3] }];
         let run = |multigrid: bool| {
-            let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-9, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid };
+            let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-9, cg_max: 20_000, exclude_layers: 2, cell_scale: None, multigrid, contact: None };
             analyse(&setup, &cases, |_| {}).unwrap()
         };
         let (plain, mg) = (run(false), run(true));
@@ -987,7 +1096,7 @@ mod tests {
         let (grid, solid) = voxelize(&p, &t, 1.0).unwrap();
         let fixed = Region::Side { axis: 1, max: false, depth: 0.01 };
         let load = Region::Side { axis: 1, max: true, depth: 0.01 };
-        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 5000, exclude_layers: 2, cell_scale: None, multigrid: true };
+        let setup = Setup { grid: &grid, solid: &solid, e_mpa: 1000.0, nu: 0.3, fixed: &fixed, load: &load, cg_tol: 1e-6, cg_max: 5000, exclude_layers: 2, cell_scale: None, multigrid: true, contact: None };
         let cases = [Case { name: "twist".into(), force: [0.0; 3], moment: [0.0, 100.0, 0.0] }];
         assert!(analyse(&setup, &cases, |_| {}).is_ok());
     }
