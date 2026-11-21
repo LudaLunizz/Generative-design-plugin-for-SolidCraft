@@ -8,11 +8,11 @@
 > Questions and bugs about this plugin belong in this repository, not with the SolidCraft team.
 
 A [SolidCraft](https://github.com/tangency-labs/solidcraft) command plugin (`craft:plugin@0.1.0`,
-capability `commands@0.1`). Version 0.4: an engineering **material library** that becomes
+capability `commands@0.1`). Version 0.6: an engineering **material library** that becomes
 SolidCraft's own physical material cards, a per-body **material report**, a **stress check**
 for flat parts, and a **plate optimiser** that designs a lightweight plate and draws it as a sketch
-and an extrude. Next to the plugin there are four command-line tools (3D stress check,
-printed-part stress check, plate refine pass, beam optimiser; see below).
+and an extrude. Next to the plugin there are five command-line tools (3D stress check,
+printed-part stress check, plate refine pass, 3D bracket optimiser, beam optimiser; see below).
 
 Version 0.6.1 is tested with **SolidCraft 0.45.0** (`tests/cli-test.sh` and `solidcraft-cli plugin
 check`: no problems); 0.6.0 also with corner rounding and the `plate_refine` build script, and with 0.44.1;
@@ -225,15 +225,15 @@ structural calculation.
 ## Run gallery: the wall bracket
 
 What the 3D tools produce, from the wall-bracket runs of `eso3d` (50 N down + 15 N sideways at the tip,
-PETG, safety factor 4): run 6 (round bars, 94 g) and run 8 (sized bars on a slim frame, 58 g). Colours are
+PETG, safety factor 4): run 6 (round bars, 94 g) and run 10 (sized bars on a slim frame, the wall pushing back, 38 g). Colours are
 von Mises stress, scaled to each picture's own peak.
 
-| Run 6, 73.8 cm³, SF 7.6 / 15.0 | Run 8, 45.6 cm³, SF 4.1 / 6.8 |
+| Run 6, 73.8 cm³, SF 7.6 / 15.0 | Run 10, 30.0 cm³, SF 4.1 / 5.0 |
 |---|---|
-| ![run 6, stress under 50 N down](docs/runs/run6-down-iso.jpg) | ![run 8, stress under 50 N down](docs/runs/run8-down-iso.jpg) |
+| ![run 6, stress under 50 N down](docs/runs/run6-down-iso.jpg) | ![run 10, stress under 50 N down](docs/runs/run10-down-iso.jpg) |
 
-All views of runs 6 to 9, the numbers of runs 1 to 9 and the raw reports are in
-[docs/runs](docs/runs/README.md). Run 10 (the wall pushing back) is still computing; its first numbers are in the table.
+All views of runs 6 to 10, the numbers of runs 1 to 10 and the raw reports are in
+[docs/runs](docs/runs/README.md).
 
 ## Hardening notes
 
@@ -242,7 +242,7 @@ All views of runs 6 to 9, the numbers of runs 1 to 9 and the raw reports are in
   non-test code (clippy-denied); `unsafe` only in the generated WIT bindings.
 - Host errors pass through unchanged, so SolidCraft rolls the transaction back.
 - Cancellation is checked before each edit.
-- Limits: 2e9 fuel, 64 MiB, 15 s: inside SolidCraft's default ceilings, so no extra approval.
+- Limits: 1e11 fuel, 64 MiB, 30 s (`plugin.json`): inside SolidCraft's default ceilings, so no extra approval.
 - The component imports only `craft:plugin` interfaces (no WASI); `build.sh` refuses anything else.
 
 ## SolidCraft 0.42 notes

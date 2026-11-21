@@ -34,20 +34,18 @@ Every picture below is the solver's own output, drawn by the tool's own renderer
 | [7](#run-7) | two-way bar sizing: thinner where the stress is low, thicker where it is high | 74.3 g (58.5 cm³) | 4.3 / 6.8 | 2.4 / 1.6 mm |
 | [8](#run-8) | run 7 + a slim frame instead of the full wall plate, **held only at the screws** | 57.9 g (45.6 cm³) | 4.1 / 6.8 | 6.0 / 3.3 mm |
 | [9](#run-9) | run 8 + tapered bars | 57.3 g (45.1 cm³) | 4.1 / 5.7 | 7.8 / 3.5 mm |
-| 10 | run 8 + the wall pushing back (`hold=contact`): **interim, still running**. Round 0 (before any bar was resized): 46.8 cm³, strips 12.0 mm | ~59 g (46.8 cm³) | 4.4 / 8.0 | 2.6 / 1.2 mm |
-
-Run 10 so far (checked 21 Nov, 02:38, round 2 of up to 10): round 0 passes with SF 4.4 / 8.0 at about the
-mass of run 8 and a tip that moves less than half as far (2.6 against 6.0 mm), because the wall now pushes back
-where the plate presses. Round 1 went lighter (32.7 cm³) and dropped under the target on the down load (SF 3.5), so
-the run is not finished and is **not a result yet**; the final design and its pictures follow when it ends.
+| [10](#run-10) | run 8 + **the wall pushing back** where the plate presses on it (`hold=contact`) | 38.1 g (30.0 cm³) | 4.1 / 5.0 | 4.1 / 2.3 mm |
 
 Things to know when comparing:
 
 - Runs 6 and 7 are held on the **whole wall face**; runs 8 and 9 only **at the two screws** with no wall
   pushing back, which is the safe side but makes the tip move more. Like for like, run 6 held at the screws
   only gives SF 4.7 / 9.3 and a tip movement of 4.3 / 2.4 mm at 94 g, against run 8's 58 g at SF 4.1 / 6.8.
-- Run 8 stays the best result so far: tapering (run 9) gained about 1 %, because 11 of its 13 bars already
-  sit at the 5 mm minimum, so there is nothing to taper.
+- Tapering (run 9) gained only about 1 % over run 8, because 11 of its 13 bars already sit at the 5 mm
+  minimum, so there is nothing to taper.
+- **Run 10 is the best result so far**: a third lighter than run 8 (38.1 against 57.9 g) with a tip that
+  moves less, because the wall now carries the part of the load where the plate presses on it, so the frame
+  strips shrink from 21.6 to 9.2 mm. The wall is modelled rigid and without friction. Not printed or tested yet.
 - Runs 1 to 5 only have small voxel previews, so the gallery starts at run 6, where the surface is smooth
   and the stress is drawn on the real shape.
 
@@ -101,10 +99,23 @@ from 5.0 to 6.4 mm); the gain is about 1 % and the tip moves more, so run 8 rema
 
 Top row: 50 N down (peak 11.56 MPa). Bottom row: 15 N sideways (peak 8.27 MPa).
 
+## Run 10
+
+Run 8's settings, but the wall pushes back where the plate presses on it (frictionless, lifts off where the
+plate pulls away), on top of the screws. 9 sizing rounds; the lightest that passes SF 4 is kept.
+30.0 cm³ / 38.1 g, closed mesh of 266k triangles. The wall presses on 255 (down) and 208 (side) nodes.
+
+| Isometric | From the side | From above |
+|---|---|---|
+| ![run 10 down, isometric](run10-down-iso.jpg) | ![run 10 down, side view](run10-down-side.jpg) | ![run 10 down, from above](run10-down-top.jpg) |
+| ![run 10 side load, isometric](run10-side-iso.jpg) | ![run 10 side load, side view](run10-side-side.jpg) | ![run 10 side load, from above](run10-side-top.jpg) |
+
+Top row: 50 N down (peak 11.38 MPa). Bottom row: 15 N sideways (peak 9.39 MPa).
+
 ## Not shown here
 
 - The stress colours as Blender-ready `.ply` files (6 to 10 MB each) are not in the repository; the tool
   writes them with every `bars=1` and `check=` run.
 - The screw pull-out numbers (runs 4 and 5) assumed a full rigid plate; they do not apply to the frame of
-  runs 8 and 9. The wall plug is the weak point of the whole mounting (top screw about 106 N pull against
+  runs 8 to 10. The wall plug is the weak point of the whole mounting (top screw about 106 N pull against
   650 N recommended for a fischer SX Plus 6 x 30 in concrete).
